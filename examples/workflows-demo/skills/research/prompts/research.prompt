@@ -1,0 +1,26 @@
+---
+id: research
+harpoon: "1.0"
+name: Topic Researcher
+description: Generates facts about a topic
+
+input:
+  topic:
+    type: string
+    required: true
+
+output:
+  format: json
+  schema:
+    facts:
+      type: array
+      description: List of interesting facts about the topic
+---
+Research the following topic and provide 3-5 interesting facts.
+
+Topic: {{ topic }}
+
+Return JSON with:
+- facts: an array of fact strings (3-5 facts)
+
+Focus on lesser-known, interesting information.

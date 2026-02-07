@@ -1,0 +1,30 @@
+---
+id: respond_negative
+harpoon: "1.0"
+name: Negative Response
+description: Responds to negative messages
+
+# Terminal prompt (no next = workflow ends here)
+
+input:
+  message:
+    type: string
+    required: true
+
+output:
+  format: json
+  schema:
+    sentiment:
+      type: string
+      description: Always "negative"
+    response:
+      type: string
+      description: Your empathetic response
+---
+The user sent a negative message. Respond with empathy and support.
+
+Message: {{ message }}
+
+Return JSON with:
+- sentiment: "negative"
+- response: your brief, caring response

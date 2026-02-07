@@ -1,0 +1,40 @@
+harpoon: "0.1"
+name: looping-demo
+description: Demonstrates iterative loops by building a sentence word by word
+
+defaults:
+  model: anthropic/claude-sonnet-4-20250514
+  temperature: 0.3
+  max_tokens: 256
+
+nodes:
+  input:
+    type: input
+    schema:
+      text:
+        type: string
+        description: Starting text to build from
+
+  build_loop:
+    type: branch
+    workflow: ./workflows/build.tml
+    loop_while: "is_complete == false"
+    max_iterations: 10
+
+  output:
+    type: output
+    format: json
+
+edges:
+  input_to_loop:
+    from: input
+    to: build_loop
+    mapping:
+      text: text
+
+  loop_to_output:
+    from: build_loop
+    to: output
+    mapping:
+      final_text: text
+      complete: is_complete

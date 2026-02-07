@@ -1,0 +1,7 @@
+---
+id: test
+harpoon: "1.0"
+name: Test Prompt
+model: anthropic/claude-sonnet-4-20250514
+---
+Hello {{name}}!

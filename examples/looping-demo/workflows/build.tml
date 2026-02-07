@@ -1,0 +1,39 @@
+harpoon: "0.1"
+name: build-sentence
+description: Sub-workflow that adds words to build a sentence
+
+defaults:
+  model: anthropic/claude-sonnet-4-20250514
+  temperature: 0.3
+  max_tokens: 256
+
+nodes:
+  input:
+    type: input
+    schema:
+      text:
+        type: string
+        description: Current text being built
+
+  build:
+    type: prompt
+    prompt: prompts/build.prompt
+
+  output:
+    type: output
+    format: json
+
+edges:
+  input_to_build:
+    from: input
+    to: build
+    mapping:
+      text: text
+
+  build_to_output:
+    from: build
+    to: output
+    mapping:
+      text: text
+      word_count: word_count
+      is_complete: is_complete

@@ -1,0 +1,37 @@
+harpoon: "0.1"
+name: hello-world
+description: A simple 2-step workflow demonstrating basic Harpoon concepts
+
+defaults:
+  model: anthropic/claude-sonnet-4-20250514
+  temperature: 0.7
+  max_tokens: 256
+
+nodes:
+  input:
+    type: input
+    schema:
+      name:
+        type: string
+        description: Your name
+
+  greet:
+    type: prompt
+    prompt: prompts/greet.prompt
+
+  output:
+    type: output
+    format: json
+
+edges:
+  input_to_greet:
+    from: input
+    to: greet
+    mapping:
+      name: name
+
+  greet_to_output:
+    from: greet
+    to: output
+    mapping:
+      greeting: text

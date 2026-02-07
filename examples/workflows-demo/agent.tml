@@ -1,0 +1,47 @@
+harpoon: "0.1"
+name: workflows-demo
+description: Demonstrates composing workflows with trigger nodes (skills)
+
+defaults:
+  model: anthropic/claude-sonnet-4-20250514
+  temperature: 0.7
+  max_tokens: 1024
+
+nodes:
+  input:
+    type: input
+    schema:
+      topic:
+        type: string
+        description: Topic to research and summarize
+
+  research:
+    type: trigger
+    workflow: ./skills/research
+
+  summarize:
+    type: trigger
+    workflow: ./skills/summarize
+
+  output:
+    type: output
+    format: json
+
+edges:
+  input_to_research:
+    from: input
+    to: research
+    mapping:
+      topic: topic
+
+  research_to_summarize:
+    from: research
+    to: summarize
+    mapping:
+      research_output: output
+
+  summarize_to_output:
+    from: summarize
+    to: output
+    mapping:
+      result: output

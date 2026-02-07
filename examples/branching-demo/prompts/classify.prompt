@@ -1,0 +1,37 @@
+---
+id: classify
+harpoon: "1.0"
+name: Sentiment Classifier
+description: Classifies message sentiment
+
+# Prompt-first workflow: this is the entry point with conditional branching
+entrypoint: true
+next:
+  - prompt: prompts/respond_positive.prompt
+    condition: "sentiment == 'positive'"
+  - prompt: prompts/respond_negative.prompt
+    condition: "sentiment == 'negative'"
+  - prompt: prompts/respond_neutral.prompt  # Default (no condition)
+
+input:
+  message:
+    type: string
+    required: true
+
+output:
+  format: json
+  schema:
+    sentiment:
+      type: string
+      description: One of "positive", "negative", or "neutral"
+    message:
+      type: string
+      description: The original message (passed through)
+---
+Classify the sentiment of this message as "positive", "negative", or "neutral".
+
+Message: {{ message }}
+
+Return JSON with:
+- sentiment: exactly one of "positive", "negative", or "neutral"
+- message: the original message unchanged

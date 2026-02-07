@@ -1,0 +1,9 @@
+---
+id: router
+harpoon: "1.0"
+next:
+  - prompt: prompts/a.prompt
+    condition: "status == 'ok'"
+  - prompt: prompts/b.prompt
+---
+Route.

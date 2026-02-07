@@ -1,0 +1,11 @@
+---
+id: tooled
+harpoon: "1.0"
+tools:
+  fetch_data:
+    type: python
+    module: tools.queries
+    function: get_data
+    description: Fetches data
+---
+Use the tool.

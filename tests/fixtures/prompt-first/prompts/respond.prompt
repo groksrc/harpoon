@@ -1,0 +1,23 @@
+---
+id: respond
+harpoon: "1.0"
+name: Responder
+model: anthropic/claude-sonnet-4-20250514
+input:
+  intent:
+    type: string
+    description: The classified intent
+    required: true
+  confidence:
+    type: number
+    description: Confidence score
+    required: false
+    default: 0.5
+output:
+  format: json
+  schema:
+    reply:
+      type: string
+      description: The response
+---
+Respond to intent: {{intent}} (confidence: {{confidence}})

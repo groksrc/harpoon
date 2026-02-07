@@ -1,0 +1,47 @@
+harpoon: "1.0"
+name: map-demo
+description: Demonstrates map node - splits text into chunks and processes each in parallel
+
+nodes:
+  input:
+    type: input
+    schema:
+      document:
+        type: string
+        description: Text document to process
+
+  process_chunks:
+    type: map
+    workflow: ./analyze_chunk
+    over: chunks
+    max_concurrency: 5
+    on_error: skip
+
+  output:
+    type: output
+    format: json
+
+tools:
+  chunk_text:
+    type: typescript
+    path: chunk_text.ts
+
+edges:
+  input_to_chunk:
+    from: input
+    to: chunk_text
+    mapping:
+      document: document
+
+  chunk_to_map:
+    from: chunk_text
+    to: process_chunks
+    mapping:
+      chunks: chunks
+
+  map_to_output:
+    from: process_chunks
+    to: output
+    mapping:
+      results: items
+      total: count

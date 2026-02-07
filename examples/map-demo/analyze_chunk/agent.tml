@@ -1,0 +1,29 @@
+harpoon: "1.0"
+name: analyze-chunk
+description: Analyze a single text chunk (word count and length)
+
+nodes:
+  input:
+    type: input
+  output:
+    type: output
+
+tools:
+  analyze_tool:
+    type: typescript
+    path: analyze_tool.ts
+
+edges:
+  e1:
+    from: input
+    to: analyze_tool
+    mapping:
+      item: item
+      index: index
+  e2:
+    from: analyze_tool
+    to: output
+    mapping:
+      chunk: chunk
+      word_count: word_count
+      char_count: char_count

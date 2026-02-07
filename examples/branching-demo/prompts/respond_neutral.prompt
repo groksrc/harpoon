@@ -1,0 +1,30 @@
+---
+id: respond_neutral
+harpoon: "1.0"
+name: Neutral Response
+description: Responds to neutral messages
+
+# Terminal prompt (no next = workflow ends here)
+
+input:
+  message:
+    type: string
+    required: true
+
+output:
+  format: json
+  schema:
+    sentiment:
+      type: string
+      description: Always "neutral"
+    response:
+      type: string
+      description: Your helpful response
+---
+The user sent a neutral message. Respond helpfully and professionally.
+
+Message: {{ message }}
+
+Return JSON with:
+- sentiment: "neutral"
+- response: your brief, informative response

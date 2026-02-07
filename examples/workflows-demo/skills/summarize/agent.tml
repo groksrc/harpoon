@@ -1,0 +1,38 @@
+harpoon: "0.1"
+name: summarize-skill
+description: Summarizes research facts
+
+defaults:
+  model: anthropic/claude-sonnet-4-20250514
+  temperature: 0.7
+  max_tokens: 512
+
+nodes:
+  input:
+    type: input
+    schema:
+      research_output:
+        type: object
+        description: Output from research skill containing facts
+
+  summarize:
+    type: prompt
+    prompt: prompts/summarize.prompt
+
+  output:
+    type: output
+    format: json
+
+edges:
+  input_to_summarize:
+    from: input
+    to: summarize
+    mapping:
+      research_output: research_output
+
+  summarize_to_output:
+    from: summarize
+    to: output
+    mapping:
+      summary: summary
+      topic: topic

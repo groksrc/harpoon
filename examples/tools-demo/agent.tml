@@ -1,0 +1,50 @@
+harpoon: "0.1"
+name: tools-demo
+description: Demonstrates TypeScript tools in workflows
+
+defaults:
+  model: anthropic/claude-sonnet-4-20250514
+  temperature: 0.7
+  max_tokens: 512
+
+nodes:
+  input:
+    type: input
+    schema:
+      city:
+        type: string
+        description: City to get weather for
+
+  summarize:
+    type: prompt
+    prompt: prompts/summarize.prompt
+
+  output:
+    type: output
+    format: json
+
+tools:
+  get_weather:
+    type: typescript
+    module: weather
+    function: get_weather
+    description: Gets weather data for a city
+
+edges:
+  input_to_weather:
+    from: input
+    to: get_weather
+    mapping:
+      city: city
+
+  weather_to_summarize:
+    from: get_weather
+    to: summarize
+    mapping:
+      weather_data: output
+
+  summarize_to_output:
+    from: summarize
+    to: output
+    mapping:
+      summary: text

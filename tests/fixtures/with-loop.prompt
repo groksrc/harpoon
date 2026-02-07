@@ -1,0 +1,8 @@
+---
+id: refiner
+harpoon: "1.0"
+loop:
+  while: "quality_score < 8"
+  max_iterations: 5
+---
+Refine.

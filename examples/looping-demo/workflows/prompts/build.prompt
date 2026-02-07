@@ -1,0 +1,42 @@
+---
+id: build
+harpoon: "1.0"
+name: Sentence Builder
+description: Adds words to build towards a target sentence
+
+input:
+  text:
+    type: string
+    required: true
+
+output:
+  format: json
+  schema:
+    text:
+      type: string
+      description: The text with 1-2 words added
+    word_count:
+      type: number
+      description: Number of words in the current text
+    is_complete:
+      type: boolean
+      description: True when the target sentence is complete
+---
+You are building a sentence one step at a time.
+
+TARGET: "The quick brown fox jumps over the lazy dog"
+
+CURRENT TEXT: {{text}}
+
+RULES:
+1. Add exactly 1 or 2 words to continue towards the target
+2. Only add words that appear next in the target sentence
+3. Set is_complete=true ONLY when text exactly matches the target
+4. Count the words in your output text
+
+Return JSON:
+{
+  "text": "<current text plus 1-2 more words>",
+  "word_count": <number of words in text>,
+  "is_complete": <true if text matches target exactly, false otherwise>
+}

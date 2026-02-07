@@ -1,0 +1,7 @@
+---
+id: entry
+harpoon: "1.0"
+entrypoint: true
+next: prompts/other.prompt
+---
+Test prompt.

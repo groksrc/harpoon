@@ -1,0 +1,32 @@
+---
+id: summarize
+harpoon: "1.0"
+name: Fact Summarizer
+description: Creates a summary from facts
+
+input:
+  research_output:
+    type: object
+    required: true
+    description: Research output containing facts array
+
+output:
+  format: json
+  schema:
+    summary:
+      type: string
+      description: A brief, engaging summary
+    topic:
+      type: string
+      description: The inferred topic
+---
+You received research from another workflow. Create a brief, engaging summary.
+
+Research Output:
+{{ research_output }}
+
+Extract the facts from the research output and create a summary.
+
+Return JSON with:
+- summary: A 2-3 sentence summary that captures the key insights
+- topic: The topic these facts are about (infer from content)

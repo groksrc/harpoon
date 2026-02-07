@@ -1,0 +1,15 @@
+---
+id: with_inputs
+harpoon: "1.0"
+input:
+  message:
+    type: string
+    description: The input message
+    required: true
+  count:
+    type: number
+    description: Number of items
+    required: false
+    default: 5
+---
+Process {{message}} with count {{count}}.

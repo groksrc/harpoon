@@ -1,0 +1,23 @@
+---
+id: classify
+harpoon: "1.0"
+name: Classifier
+model: anthropic/claude-sonnet-4-20250514
+entrypoint: true
+input:
+  message:
+    type: string
+    description: Message to classify
+    required: true
+output:
+  format: json
+  schema:
+    intent:
+      type: string
+      description: The classified intent
+    confidence:
+      type: number
+      description: Confidence score
+next: prompts/respond.prompt
+---
+Classify the intent of: {{message}}

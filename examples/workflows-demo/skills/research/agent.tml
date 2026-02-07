@@ -1,0 +1,37 @@
+harpoon: "0.1"
+name: research-skill
+description: Researches a topic and returns facts
+
+defaults:
+  model: anthropic/claude-sonnet-4-20250514
+  temperature: 0.7
+  max_tokens: 512
+
+nodes:
+  input:
+    type: input
+    schema:
+      topic:
+        type: string
+        description: Topic to research
+
+  research:
+    type: prompt
+    prompt: prompts/research.prompt
+
+  output:
+    type: output
+    format: json
+
+edges:
+  input_to_research:
+    from: input
+    to: research
+    mapping:
+      topic: topic
+
+  research_to_output:
+    from: research
+    to: output
+    mapping:
+      facts: facts

@@ -1,0 +1,85 @@
+harpoon: "0.1"
+name: branching-demo
+description: Demonstrates conditional branching based on classification
+
+defaults:
+  model: anthropic/claude-sonnet-4-20250514
+  temperature: 0.7
+  max_tokens: 512
+
+nodes:
+  input:
+    type: input
+    schema:
+      message:
+        type: string
+        description: A message to classify and respond to
+
+  classify:
+    type: prompt
+    prompt: prompts/classify.prompt
+
+  respond_positive:
+    type: prompt
+    prompt: prompts/respond_positive.prompt
+
+  respond_negative:
+    type: prompt
+    prompt: prompts/respond_negative.prompt
+
+  respond_neutral:
+    type: prompt
+    prompt: prompts/respond_neutral.prompt
+
+  output:
+    type: output
+    format: json
+
+edges:
+  input_to_classify:
+    from: input
+    to: classify
+    mapping:
+      message: message
+
+  classify_to_positive:
+    from: classify
+    to: respond_positive
+    condition: "sentiment == 'positive'"
+    mapping:
+      message: message
+
+  classify_to_negative:
+    from: classify
+    to: respond_negative
+    condition: "sentiment == 'negative'"
+    mapping:
+      message: message
+
+  classify_to_neutral:
+    from: classify
+    to: respond_neutral
+    condition: "sentiment == 'neutral'"
+    mapping:
+      message: message
+
+  positive_to_output:
+    from: respond_positive
+    to: output
+    mapping:
+      response: response
+      sentiment: sentiment
+
+  negative_to_output:
+    from: respond_negative
+    to: output
+    mapping:
+      response: response
+      sentiment: sentiment
+
+  neutral_to_output:
+    from: respond_neutral
+    to: output
+    mapping:
+      response: response
+      sentiment: sentiment

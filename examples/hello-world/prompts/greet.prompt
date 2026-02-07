@@ -1,0 +1,21 @@
+---
+id: greet
+harpoon: "1.0"
+name: Greeting Generator
+description: Generates a friendly greeting
+
+# Prompt-first workflow fields
+entrypoint: true
+
+input:
+  name:
+    type: string
+    required: true
+    description: The name to greet
+
+output:
+  format: text
+---
+Generate a warm, friendly greeting for {{ name }}.
+
+Keep it to one sentence.

@@ -1,0 +1,22 @@
+---
+id: summarize
+harpoon: "1.0"
+name: Weather Summarizer
+description: Creates a friendly weather summary
+
+input:
+  weather_data:
+    type: string
+    required: true
+    description: JSON weather data from the tool
+
+output:
+  format: text
+---
+You received weather data from a tool. Create a friendly, conversational summary.
+
+Weather Data:
+{{ weather_data }}
+
+Write a brief, helpful weather summary that someone could read quickly.
+Include temperature, conditions, and any notable details.

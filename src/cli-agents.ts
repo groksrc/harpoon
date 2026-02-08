@@ -11,7 +11,7 @@
  * - Session resumption support
  */
 
-import { spawn, execSync } from "node:child_process";
+import { spawn, execSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -323,12 +323,8 @@ export function executeAgentViaCli(
     "json",
   ];
 
-  // Add JSON schema for structured outputs
-  const outputSchema = agentNode.promptNode.output;
-  if (outputSchema.format === "json") {
-    const jsonSchema = buildJsonSchema(outputSchema);
-    cmd.push("--json-schema", JSON.stringify(jsonSchema));
-  }
+  // Note: Claude CLI does not support --json-schema.
+  // JSON output is handled by the prompt instructions and parsed from the response text.
 
   // Add max turns limit
   if (agentNode.maxTurns !== null && agentNode.maxTurns !== "__unset__") {
@@ -411,7 +407,8 @@ function executeStandard(
     typeof agentNode.timeout === "number" ? agentNode.timeout * 1000 : undefined;
 
   try {
-    const result = execSync(cmd.slice(1).join(" "), {
+    // Use spawnSync with args array to avoid shell interpretation of prompt text
+    const result = spawnSync(cmd[0], cmd.slice(1), {
       cwd,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
@@ -419,18 +416,21 @@ function executeStandard(
       env,
     });
 
-    // execSync returns stdout on success
-    return processCliResult(result, "", 0, agentNode);
-  } catch (e: unknown) {
-    const err = e as { status?: number; stderr?: string; stdout?: string; message?: string };
-    if (err.status !== undefined) {
-      return processCliResult(
-        err.stdout ?? "",
-        err.stderr ?? "",
-        err.status ?? 1,
-        agentNode
+    if (result.error) {
+      throw new CLIAgentError(
+        `Failed to execute Claude CLI: ${result.error.message}`
       );
     }
+
+    return processCliResult(
+      result.stdout ?? "",
+      result.stderr ?? "",
+      result.status ?? 1,
+      agentNode
+    );
+  } catch (e: unknown) {
+    if (e instanceof CLIAgentError) throw e;
+    const err = e as { message?: string };
     throw new CLIAgentError(
       `Failed to execute Claude CLI: ${err.message ?? String(e)}`
     );
@@ -484,18 +484,26 @@ function executeWithStreaming(
     let exitCode = 0;
 
     try {
-      stdout = execSync(cmd.join(" "), {
+      // Use spawnSync with args array to avoid shell interpretation of prompt text
+      const spawnResult = spawnSync(cmd[0], cmd.slice(1), {
         cwd,
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
         timeout,
         env,
       });
+
+      if (spawnResult.error) {
+        throw spawnResult.error;
+      }
+
+      stdout = spawnResult.stdout ?? "";
+      stderr = spawnResult.stderr ?? "";
+      exitCode = spawnResult.status ?? 1;
     } catch (e: unknown) {
-      const err = e as { status?: number; stderr?: string; stdout?: string };
-      stdout = err.stdout ?? "";
-      stderr = err.stderr ?? "";
-      exitCode = err.status ?? 1;
+      const err = e as { message?: string };
+      stderr = err.message ?? String(e);
+      exitCode = 1;
     }
 
     // Process remaining events from the log

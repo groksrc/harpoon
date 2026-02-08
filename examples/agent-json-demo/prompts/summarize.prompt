@@ -1,0 +1,25 @@
+---
+id: summarize
+harpoon: "1.1"
+name: Topic Summarizer
+description: Summarizes a topic and returns structured JSON
+
+input:
+  topic:
+    type: string
+    required: true
+    description: The topic to summarize
+
+output:
+  format: json
+  schema:
+    summary:
+      type: string
+      description: A one-sentence summary of the topic
+    keywords:
+      type: array
+      description: Three keywords related to the topic
+---
+Summarize the following topic in one sentence and provide exactly three keywords.
+
+Topic: {{ topic }}

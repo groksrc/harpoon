@@ -593,7 +593,7 @@ async function executeAgentNodeAsync(
       };
     }
 
-    result = executeAgentViaCli(
+    result = await executeAgentViaCli(
       agentNode,
       gathered,
       project.root,

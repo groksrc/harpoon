@@ -6,15 +6,12 @@
  * Claude subscription instead of API tokens, reducing operational costs.
  *
  * Features:
- * - Real-time telemetry streaming via Claude hooks
+ * - Real-time telemetry via --output-format stream-json
  * - Tool call visibility during execution
  * - Session resumption support
  */
 
-import { spawn, execSync, spawnSync } from "node:child_process";
-import * as fs from "node:fs";
-import * as path from "node:path";
-import * as os from "node:os";
+import { spawn, execSync, spawnSync, type ChildProcess } from "node:child_process";
 
 import { HarpoonError } from "./errors.js";
 import type { AgentNode } from "./parser.js";
@@ -163,8 +160,8 @@ function parseCLIOutput(
         output = parseJsonResponse(responseText);
       } catch (e) {
         throw new CLIAgentError(
-          `Agent '${agentNode.id}' returned invalid JSON in response. ` +
-            `Response preview: ${responseText.slice(0, 200)}`
+          `Agent '${agentNode.id}' returned invalid JSON. ` +
+            `CLI output: ${JSON.stringify(cliOutput, null, 2).slice(0, 1000)}`
         );
       }
     }
@@ -214,80 +211,90 @@ function processCliResult(
     );
   }
 
+  // Check for error subtypes that indicate incomplete execution
+  const subtype = cliOutput["subtype"] as string | undefined;
+  if (subtype?.startsWith("error_")) {
+    const cost = cliOutput["total_cost_usd"] ?? "unknown";
+    throw new CLIAgentError(
+      `Agent '${agentNode.id}' stopped: ${subtype} (cost: $${cost}). ` +
+        `The agent was terminated before producing a result.`
+    );
+  }
+
   return parseCLIOutput(cliOutput, agentNode);
 }
 
-// ─── Dispatch Event ──────────────────────────────────────────
+// ─── Stream JSON Event Processing ────────────────────────────
 
-function dispatchEvent(
-  eventData: Record<string, unknown>,
-  onEvent: TelemetryCallback
-): void {
-  const hookType = (eventData["hook"] as string) ?? "";
-  if (hookType === "Message") {
-    onEvent(hookType, "", eventData);
-  } else {
-    onEvent(
-      hookType,
-      (eventData["tool"] as string) ?? "",
-      (eventData["input"] as Record<string, unknown>) ?? {}
-    );
-  }
-}
-
-// ─── Hook Script Creation ────────────────────────────────────
-
-function createHookScript(
-  eventLogPath: string,
-  stateFilePath: string
-): string {
-  return `#!/usr/bin/env node
-// Harpoon telemetry hook - logs tool calls and messages for real-time monitoring
-const fs = require('fs');
-const path = require('path');
-
-function getProcessedCount() {
-  try {
-    return parseInt(fs.readFileSync('${stateFilePath}', 'utf-8').trim() || '0', 10);
-  } catch { return 0; }
-}
-
-function setProcessedCount(count) {
-  fs.writeFileSync('${stateFilePath}', String(count));
-}
-
-try {
-  let input = '';
-  process.stdin.setEncoding('utf-8');
-  process.stdin.on('data', (d) => { input += d; });
-  process.stdin.on('end', () => {
-    try {
-      const data = JSON.parse(input);
-      const hookEvent = data.hook_event_name || '';
-      if (hookEvent === 'PreToolUse' || hookEvent === 'PostToolUse') {
-        const event = {
-          hook: hookEvent,
-          tool: data.tool_name || '',
-          input: data.tool_input || {}
-        };
-        fs.appendFileSync('${eventLogPath}', JSON.stringify(event) + '\\n');
+/** Extract text content from an assistant message's content field. */
+function extractTextContent(content: unknown): string | null {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const texts: string[] = [];
+    for (const item of content) {
+      if (item && typeof item === "object" && "type" in item) {
+        const block = item as Record<string, unknown>;
+        if (block.type === "text" && typeof block.text === "string") {
+          texts.push(block.text);
+        }
       }
-    } catch {}
-    process.exit(0);
-  });
-} catch { process.exit(0); }
-`;
+    }
+    return texts.length > 0 ? texts.join("\n") : null;
+  }
+  return null;
 }
 
-function createHookSettings(hookScriptPath: string): Record<string, unknown> {
-  const hookConfig = { type: "command", command: hookScriptPath };
-  return {
-    hooks: {
-      PreToolUse: [{ matcher: ".*", hooks: [hookConfig] }],
-      PostToolUse: [{ matcher: ".*", hooks: [hookConfig] }],
-      Stop: [{ hooks: [hookConfig] }],
-    },
-  };
+/** Extract tool_use blocks from an assistant message's content field. */
+function extractToolUses(
+  content: unknown
+): Array<{ name: string; input: Record<string, unknown> }> {
+  if (!Array.isArray(content)) return [];
+  const tools: Array<{ name: string; input: Record<string, unknown> }> = [];
+  for (const item of content) {
+    if (item && typeof item === "object" && "type" in item) {
+      const block = item as Record<string, unknown>;
+      if (block.type === "tool_use") {
+        tools.push({
+          name: (block.name as string) ?? "",
+          input: (block.input as Record<string, unknown>) ?? {},
+        });
+      }
+    }
+  }
+  return tools;
+}
+
+/**
+ * Process a single stream-json event and dispatch telemetry.
+ * Returns the result event data if this is the final result, otherwise null.
+ */
+function processStreamEvent(
+  event: Record<string, unknown>,
+  onEvent: TelemetryCallback
+): Record<string, unknown> | null {
+  const eventType = event["type"] as string;
+
+  if (eventType === "assistant") {
+    const message = event["message"] as Record<string, unknown> | undefined;
+    if (message?.content) {
+      // Dispatch text content as Message events
+      const text = extractTextContent(message.content);
+      if (text?.trim()) {
+        onEvent("Message", "", { message: text });
+      }
+      // Dispatch tool_use blocks as PreToolUse events
+      for (const tool of extractToolUses(message.content)) {
+        onEvent("PreToolUse", tool.name, tool.input);
+      }
+    }
+  } else if (eventType === "tool_result") {
+    const toolName = (event["tool_name"] as string) ?? "";
+    onEvent("PostToolUse", toolName, {});
+  } else if (eventType === "result") {
+    return event;
+  }
+
+  return null;
 }
 
 // ─── Main Execution Function ─────────────────────────────────
@@ -298,13 +305,13 @@ function createHookSettings(hookScriptPath: string): Record<string, unknown> {
  * This provides a cost-effective alternative to the Agent SDK by using
  * your existing Claude subscription via the CLI.
  */
-export function executeAgentViaCli(
+export async function executeAgentViaCli(
   agentNode: AgentNode,
   inputs: Record<string, unknown>,
   projectRoot: string,
   resumeSession?: string,
   onEvent?: TelemetryCallback
-): AgentResult {
+): Promise<AgentResult> {
   const claudePath = checkCliAvailable();
 
   if (!agentNode.promptNode) {
@@ -320,21 +327,31 @@ export function executeAgentViaCli(
     "-p",
     renderedPrompt,
     "--output-format",
-    "json",
+    // Use stream-json for real-time telemetry, json for standard execution
+    onEvent ? "stream-json" : "json",
   ];
 
-  // Note: Claude CLI does not support --json-schema.
-  // JSON output is handled by the prompt instructions and parsed from the response text.
-
-  // Add max turns limit
-  if (agentNode.maxTurns !== null && agentNode.maxTurns !== "__unset__") {
-    cmd.push("--max-turns", String(agentNode.maxTurns));
+  // stream-json requires --verbose
+  if (onEvent) {
+    cmd.push("--verbose");
   }
+
+  // Add JSON schema for structured outputs
+  const outputSchema = agentNode.promptNode.output;
+  if (outputSchema.format === "json" && Object.keys(outputSchema.fields).length > 0) {
+    const jsonSchema = buildJsonSchema(outputSchema);
+    cmd.push("--json-schema", JSON.stringify(jsonSchema));
+  }
+
+  // Note: Claude CLI has no --max-turns flag. The max_turns setting from
+  // the manifest is ignored for CLI mode. Use allowed_tools and prompt
+  // design to keep agents focused. A future max_budget field could map
+  // directly to --max-budget-usd.
 
   // Add permission mode
   if (agentNode.permissionMode) {
     const modeMap: Record<string, string> = {
-      acceptEdits: "default",
+      acceptEdits: "acceptEdits",
       bypassPermissions: "bypassPermissions",
       default: "default",
       plan: "plan",
@@ -343,22 +360,27 @@ export function executeAgentViaCli(
     cmd.push("--permission-mode", cliMode);
   }
 
-  // Add allowed tools
+  // Add tools configuration
+  // --tools: sets the COMPLETE tool list ("*" for all, "" to disable all)
+  // --allowedTools: adds to the default set (doesn't disable anything)
   if (
     agentNode.allowedTools === null ||
-    agentNode.allowedTools === "__unset__"
+    agentNode.allowedTools === "__unset__" ||
+    agentNode.allowedTools === "*"
   ) {
     // Allow all tools
+    cmd.push("--tools", "*");
   } else if (
     Array.isArray(agentNode.allowedTools) &&
     agentNode.allowedTools.length > 0
   ) {
-    cmd.push("--allowedTools", agentNode.allowedTools.join(","));
+    cmd.push("--tools", agentNode.allowedTools.join(","));
   } else if (
     Array.isArray(agentNode.allowedTools) &&
     agentNode.allowedTools.length === 0
   ) {
-    cmd.push("--allowedTools", "");
+    // Empty list = disable ALL tools
+    cmd.push("--tools", '""');
   }
 
   // Add session resume
@@ -386,7 +408,7 @@ export function executeAgentViaCli(
     }
   }
 
-  // If telemetry callback provided, use streaming execution with hooks
+  // If telemetry callback provided, use streaming execution
   if (onEvent) {
     return executeWithStreaming(cmd, cwd, env, agentNode, onEvent);
   }
@@ -408,10 +430,11 @@ function executeStandard(
 
   try {
     // Use spawnSync with args array to avoid shell interpretation of prompt text
+    // stdin must be "ignore" — an open pipe blocks the Claude CLI
     const result = spawnSync(cmd[0], cmd.slice(1), {
       cwd,
       encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"],
       timeout,
       env,
     });
@@ -437,107 +460,138 @@ function executeStandard(
   }
 }
 
-// ─── Streaming Execution with Hooks ──────────────────────────
+// ─── Streaming Execution via stream-json ─────────────────────
 
+/**
+ * Execute CLI with --output-format stream-json for real-time telemetry.
+ *
+ * Parses newline-delimited JSON events from stdout as they arrive,
+ * dispatching telemetry for assistant messages and tool calls.
+ * The final "result" event is used to build the AgentResult.
+ */
 function executeWithStreaming(
   cmd: string[],
   cwd: string,
   env: Record<string, string>,
   agentNode: AgentNode,
   onEvent: TelemetryCallback
-): AgentResult {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "harpoon_hooks_"));
-  const eventLogPath = path.join(tempDir, "events.jsonl");
-  const stateFilePath = path.join(tempDir, "transcript_state.txt");
+): Promise<AgentResult> {
+  return new Promise<AgentResult>((resolve, reject) => {
+    // Start the CLI process asynchronously
+    // stdin must be "ignore" (not "pipe") — an open pipe blocks the CLI
+    const child: ChildProcess = spawn(cmd[0], cmd.slice(1), {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      env,
+    });
 
-  // Create event log and state files
-  fs.writeFileSync(eventLogPath, "");
-  fs.writeFileSync(stateFilePath, "0");
-
-  // Create hook script
-  const hookScriptPath = path.join(tempDir, "telemetry-hook.js");
-  fs.writeFileSync(hookScriptPath, createHookScript(eventLogPath, stateFilePath));
-  fs.chmodSync(hookScriptPath, 0o755);
-
-  // Set up settings.local.json in cwd
-  const claudeDir = path.join(cwd, ".claude");
-  fs.mkdirSync(claudeDir, { recursive: true });
-  const settingsPath = path.join(claudeDir, "settings.local.json");
-
-  let originalSettings: string | null = null;
-  if (fs.existsSync(settingsPath)) {
-    originalSettings = fs.readFileSync(settingsPath, "utf-8");
-  }
-
-  const settings = createHookSettings(hookScriptPath);
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-
-  try {
-    const timeout =
-      typeof agentNode.timeout === "number"
-        ? agentNode.timeout * 1000
-        : undefined;
-
-    // Run CLI process synchronously
-    let stdout = "";
     let stderr = "";
-    let exitCode = 0;
+    let stdoutBuffer = "";
+    let resultEvent: Record<string, unknown> | null = null;
 
-    try {
-      // Use spawnSync with args array to avoid shell interpretation of prompt text
-      const spawnResult = spawnSync(cmd[0], cmd.slice(1), {
-        cwd,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-        timeout,
-        env,
-      });
+    child.stderr?.setEncoding("utf-8");
+    child.stderr?.on("data", (data: string) => {
+      stderr += data;
+    });
 
-      if (spawnResult.error) {
-        throw spawnResult.error;
-      }
+    // Parse stream-json events from stdout in real-time
+    child.stdout?.setEncoding("utf-8");
+    child.stdout?.on("data", (chunk: string) => {
+      stdoutBuffer += chunk;
 
-      stdout = spawnResult.stdout ?? "";
-      stderr = spawnResult.stderr ?? "";
-      exitCode = spawnResult.status ?? 1;
-    } catch (e: unknown) {
-      const err = e as { message?: string };
-      stderr = err.message ?? String(e);
-      exitCode = 1;
-    }
+      // Process complete lines
+      let newlineIdx: number;
+      while ((newlineIdx = stdoutBuffer.indexOf("\n")) !== -1) {
+        const line = stdoutBuffer.slice(0, newlineIdx).trim();
+        stdoutBuffer = stdoutBuffer.slice(newlineIdx + 1);
 
-    // Process remaining events from the log
-    if (fs.existsSync(eventLogPath)) {
-      const lines = fs.readFileSync(eventLogPath, "utf-8").split("\n");
-      for (const line of lines) {
-        if (line.trim()) {
-          try {
-            dispatchEvent(JSON.parse(line), onEvent);
-          } catch {
-            // Skip malformed events
+        if (!line) continue;
+        try {
+          const event = JSON.parse(line) as Record<string, unknown>;
+          const result = processStreamEvent(event, onEvent);
+          if (result) {
+            resultEvent = result;
           }
+        } catch {
+          // Skip malformed JSON lines
         }
       }
+    });
+
+    // Set up timeout if configured
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    if (typeof agentNode.timeout === "number") {
+      timeoutHandle = setTimeout(() => {
+        child.kill("SIGTERM");
+      }, agentNode.timeout * 1000);
     }
 
-    return processCliResult(stdout, stderr, exitCode, agentNode);
-  } finally {
-    // Restore original settings or remove
-    try {
-      if (originalSettings !== null) {
-        fs.writeFileSync(settingsPath, originalSettings);
-      } else if (fs.existsSync(settingsPath)) {
-        fs.unlinkSync(settingsPath);
+    child.on("close", (exitCode: number | null) => {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+
+      // Process any remaining data in buffer
+      if (stdoutBuffer.trim()) {
+        try {
+          const event = JSON.parse(stdoutBuffer.trim()) as Record<string, unknown>;
+          const result = processStreamEvent(event, onEvent);
+          if (result) resultEvent = result;
+        } catch {
+          // Skip malformed trailing data
+        }
       }
-    } catch {
-      // Best effort cleanup
-    }
 
-    // Clean up temp directory
-    try {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    } catch {
-      // Best effort cleanup
-    }
-  }
+      // stream-json exits with code 1 but includes the result in the stream
+      // Only treat as error if we have no result event at all
+      if (!resultEvent) {
+        if (exitCode !== 0) {
+          reject(
+            new CLIAgentError(
+              `Agent '${agentNode.id}' CLI execution failed (exit ${exitCode}): ${stderr.trim() || "Unknown error"}`
+            )
+          );
+          return;
+        }
+        reject(
+          new CLIAgentError(
+            `Agent '${agentNode.id}' produced no result event in stream`
+          )
+        );
+        return;
+      }
+
+      // Check for errors in the result event
+      if (resultEvent["is_error"]) {
+        const errorResult = (resultEvent["result"] as string) ?? "Unknown CLI error";
+        reject(
+          new CLIAgentError(
+            `Agent '${agentNode.id}' CLI reported error: ${errorResult}`
+          )
+        );
+        return;
+      }
+
+      const subtype = resultEvent["subtype"] as string | undefined;
+      if (subtype?.startsWith("error_")) {
+        const cost = resultEvent["total_cost_usd"] ?? "unknown";
+        reject(
+          new CLIAgentError(
+            `Agent '${agentNode.id}' stopped: ${subtype} (cost: $${cost}). ` +
+              `The agent was terminated before producing a result.`
+          )
+        );
+        return;
+      }
+
+      try {
+        resolve(parseCLIOutput(resultEvent, agentNode));
+      } catch (e) {
+        reject(e);
+      }
+    });
+
+    child.on("error", (err: Error) => {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      reject(new CLIAgentError(`Failed to execute Claude CLI: ${err.message}`));
+    });
+  });
 }

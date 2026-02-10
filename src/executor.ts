@@ -66,6 +66,7 @@ import type { TelemetryConfig } from "./telemetry.js";
 import { isSdkAvailable, executeAgent } from "./agents.js";
 import type { AgentResult } from "./agents.js";
 import { executeAgentViaCli } from "./cli-agents.js";
+import { VERSION } from "./version.js";
 
 // ─── Data Interfaces ─────────────────────────────────────────
 
@@ -1491,7 +1492,7 @@ export async function run(
       entrypoint: entrypoint ?? null,
       inputs: inputs ?? {},
       startedAt: nowIso(),
-      harpoonVersion: "1.1.0",
+      harpoonVersion: VERSION,
     };
     await artifactManager.saveMetadata(metadata);
 

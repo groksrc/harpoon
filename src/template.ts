@@ -52,6 +52,9 @@ export function render(
     if (value === undefined || value === null) {
       return match; // Leave unknown vars as-is
     }
+    if (typeof value === "object") {
+      return JSON.stringify(value, null, 2);
+    }
     return String(value);
   });
 }

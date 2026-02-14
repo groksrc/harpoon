@@ -400,10 +400,11 @@ export async function executeAgentViaCli(
     cmd.push("--mcp-config", JSON.stringify(mcpConfig));
   }
 
-  // Build environment without ANTHROPIC_API_KEY so CLI uses subscription auth
+  // Build environment without ANTHROPIC_API_KEY so CLI uses subscription auth,
+  // and without CLAUDECODE so nested CLI sessions are allowed
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (k !== "ANTHROPIC_API_KEY" && v !== undefined) {
+    if (k !== "ANTHROPIC_API_KEY" && k !== "CLAUDECODE" && v !== undefined) {
       env[k] = v;
     }
   }

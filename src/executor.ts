@@ -488,7 +488,8 @@ async function executeToolNodeAsync(
   dag: DAG,
   nodeOutputs: Record<string, Record<string, unknown>>,
   nodeTrace: NodeTrace,
-  toolRunner: TypeScriptToolRunner
+  toolRunner: TypeScriptToolRunner,
+  dryRun: boolean
 ): Promise<void> {
   const toolDef = project.tools[nodeId];
   if (!toolDef) {
@@ -497,6 +498,11 @@ async function executeToolNodeAsync(
 
   const gathered = gatherInputs(nodeId, dag, nodeOutputs);
   nodeTrace.input = gathered;
+
+  if (dryRun) {
+    nodeTrace.output = { dry_run: true, ...gathered };
+    return;
+  }
 
   const tsToolDef: TSToolDef = {
     id: toolDef.id,
@@ -1226,7 +1232,8 @@ async function executeNodeAsync(
         dag,
         nodeOutputs,
         nodeTrace,
-        toolRunner
+        toolRunner,
+        dryRun
       );
     } else if (node.type === "agent") {
       const sessionToResume = resumeSessions?.[nodeId];

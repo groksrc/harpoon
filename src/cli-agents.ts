@@ -519,16 +519,36 @@ function executeWithStreaming(
       }
     });
 
-    // Set up timeout if configured
+    // Set up timeout if configured — SIGTERM first, SIGKILL after 5s grace period
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    let killHandle: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+
     if (typeof agentNode.timeout === "number") {
       timeoutHandle = setTimeout(() => {
+        timedOut = true;
         child.kill("SIGTERM");
+        killHandle = setTimeout(() => {
+          if (!child.killed) {
+            child.kill("SIGKILL");
+          }
+        }, 5_000);
       }, agentNode.timeout * 1000);
     }
 
     child.on("close", (exitCode: number | null) => {
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (killHandle) clearTimeout(killHandle);
+
+      // Timeout-specific error — surface before generic exit-code handling
+      if (timedOut && !resultEvent) {
+        reject(
+          new CLIAgentError(
+            `Agent '${agentNode.id}' timed out after ${agentNode.timeout}s`
+          )
+        );
+        return;
+      }
 
       // Process any remaining data in buffer
       if (stdoutBuffer.trim()) {
@@ -592,6 +612,7 @@ function executeWithStreaming(
 
     child.on("error", (err: Error) => {
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (killHandle) clearTimeout(killHandle);
       reject(new CLIAgentError(`Failed to execute Claude CLI: ${err.message}`));
     });
   });

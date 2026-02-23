@@ -1309,6 +1309,8 @@ async function executeNodeAsync(
         output: nodeTrace.output,
         input_tokens: nodeTrace.tokens["input"] ?? 0,
         output_tokens: nodeTrace.tokens["output"] ?? 0,
+        cost_usd: nodeTrace.costUsd ?? 0,
+        num_turns: nodeTrace.numTurns,
       },
       nodeId,
       TelemetryLevel.INFO

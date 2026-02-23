@@ -16,6 +16,8 @@ import {
   ProviderError,
   SchemaValidationError,
 } from "../src/errors.js";
+import { TelemetryLevel } from "../src/telemetry.js";
+import type { TelemetryConfig } from "../src/telemetry.js";
 import type { Project, Edge, InputNode, OutputNode } from "../src/project.js";
 import type { PromptNode } from "../src/parser.js";
 
@@ -255,6 +257,90 @@ describe("execution trace", () => {
     const nodeIds = result.trace.nodes.map((n) => n.id);
     expect(nodeIds).toContain("input");
     expect(nodeIds).toContain("output");
+  });
+});
+
+describe("telemetry file output", () => {
+  it("writes telemetry.jsonl to default run dir when no file path specified", async () => {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "harpoon-test-"));
+    const project = makeSimpleProject();
+    project.root = tmpdir;
+
+    const telemetryConfig: TelemetryConfig = {
+      enabled: true,
+      format: "human",
+      level: TelemetryLevel.INFO,
+    };
+
+    const result = await run(project, {
+      dryRun: true,
+      inputs: { message: "hello" },
+      artifactDir: path.join(tmpdir, ".harpoon"),
+      telemetryConfig,
+    });
+
+    const runId = result.trace.runId;
+    const telemetryFile = path.join(tmpdir, ".harpoon", "runs", runId, "telemetry.jsonl");
+    expect(fs.existsSync(telemetryFile)).toBe(true);
+
+    const lines = fs.readFileSync(telemetryFile, "utf-8").trim().split("\n");
+    expect(lines.length).toBeGreaterThanOrEqual(1);
+
+    // Each line should be valid JSON
+    for (const line of lines) {
+      const event = JSON.parse(line);
+      expect(event.run_id).toBe(runId);
+      expect(event.event).toBeDefined();
+    }
+
+    // Should include workflow_started and node events
+    const events = lines.map((l) => JSON.parse(l));
+    const eventTypes = events.map((e) => e.event);
+    expect(eventTypes).toContain("workflow_started");
+    expect(eventTypes).toContain("node_started");
+    expect(eventTypes).toContain("node_completed");
+
+    // NODE_STARTED should include input
+    const nodeStarted = events.find((e) => e.event === "node_started" && e.node_id === "output");
+    expect(nodeStarted).toBeDefined();
+    expect(nodeStarted.data).toHaveProperty("input");
+
+    // NODE_COMPLETED should include output
+    const nodeCompleted = events.find((e) => e.event === "node_completed" && e.node_id === "output");
+    expect(nodeCompleted).toBeDefined();
+    expect(nodeCompleted.data).toHaveProperty("output");
+
+    fs.rmSync(tmpdir, { recursive: true, force: true });
+  });
+
+  it("uses --telemetry-file path when specified", async () => {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "harpoon-test-"));
+    const customFile = path.join(tmpdir, "custom.jsonl");
+    const project = makeSimpleProject();
+    project.root = tmpdir;
+
+    const telemetryConfig: TelemetryConfig = {
+      enabled: true,
+      format: "human",
+      filePath: customFile,
+      level: TelemetryLevel.INFO,
+    };
+
+    const result = await run(project, {
+      dryRun: true,
+      inputs: { message: "hello" },
+      telemetryConfig,
+    });
+
+    // Wait for flush
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(fs.existsSync(customFile)).toBe(true);
+    const lines = fs.readFileSync(customFile, "utf-8").trim().split("\n");
+    const events = lines.map((l) => JSON.parse(l));
+    expect(events[0].event).toBe("workflow_started");
+
+    fs.rmSync(tmpdir, { recursive: true, force: true });
   });
 });
 

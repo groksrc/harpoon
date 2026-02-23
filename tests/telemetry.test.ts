@@ -67,8 +67,7 @@ describe("defaultTelemetryConfig", () => {
   it("has sensible defaults", () => {
     const config = defaultTelemetryConfig();
     expect(config.enabled).toBe(false);
-    expect(config.format).toBe("jsonl");
-    expect(config.stdout).toBe(true);
+    expect(config.format).toBe("human");
     expect(config.level).toBe(TelemetryLevel.INFO);
   });
 });
@@ -79,7 +78,6 @@ describe("TelemetryEmitter", () => {
     const config: TelemetryConfig = {
       enabled: false,
       format: "jsonl",
-      stdout: true,
       level: TelemetryLevel.INFO,
     };
     const emitter = new TelemetryEmitter(config, stream);
@@ -95,7 +93,6 @@ describe("TelemetryEmitter", () => {
     const config: TelemetryConfig = {
       enabled: true,
       format: "jsonl",
-      stdout: true,
       level: TelemetryLevel.INFO,
     };
     const emitter = new TelemetryEmitter(config, stream);
@@ -120,7 +117,6 @@ describe("TelemetryEmitter", () => {
     const config: TelemetryConfig = {
       enabled: true,
       format: "jsonl",
-      stdout: true,
       level: TelemetryLevel.INFO,
     };
     const emitter = new TelemetryEmitter(config, stream);
@@ -146,7 +142,6 @@ describe("TelemetryEmitter", () => {
     const config: TelemetryConfig = {
       enabled: true,
       format: "human",
-      stdout: true,
       level: TelemetryLevel.INFO,
     };
     const emitter = new TelemetryEmitter(config, stream);
@@ -167,12 +162,12 @@ describe("TelemetryEmitter", () => {
 
     const config: TelemetryConfig = {
       enabled: true,
-      format: "jsonl",
+      format: "human",
       filePath: logFile,
-      stdout: false,
       level: TelemetryLevel.INFO,
     };
-    const emitter = new TelemetryEmitter(config);
+    const stream = new StringStream();
+    const emitter = new TelemetryEmitter(config, stream);
 
     emitter.emit(EventType.WORKFLOW_STARTED, "test-run", { name: "test" });
     emitter.close();
@@ -187,12 +182,46 @@ describe("TelemetryEmitter", () => {
     fs.rmSync(tmpdir, { recursive: true, force: true });
   });
 
+  it("file always writes JSONL even when stdout format is human", async () => {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "harpoon-test-"));
+    const logFile = path.join(tmpdir, "telemetry.log");
+    const stream = new StringStream();
+
+    const config: TelemetryConfig = {
+      enabled: true,
+      format: "human",
+      filePath: logFile,
+      level: TelemetryLevel.INFO,
+    };
+    const emitter = new TelemetryEmitter(config, stream);
+
+    emitter.emit(EventType.NODE_STARTED, "test-run", {
+      type: "prompt",
+      input: { topic: "hello" },
+    }, "my_node");
+    emitter.close();
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // stdout should be human format
+    expect(stream.data).toContain("NODE_STARTED");
+    expect(stream.data).toContain("node=my_node");
+
+    // file should be valid JSONL
+    const content = fs.readFileSync(logFile, "utf-8");
+    const event = JSON.parse(content.trim());
+    expect(event.event).toBe("node_started");
+    expect(event.node_id).toBe("my_node");
+    expect(event.data.input).toEqual({ topic: "hello" });
+
+    fs.rmSync(tmpdir, { recursive: true, force: true });
+  });
+
   it("includes node_id when provided", () => {
     const stream = new StringStream();
     const config: TelemetryConfig = {
       enabled: true,
       format: "jsonl",
-      stdout: true,
       level: TelemetryLevel.INFO,
     };
     const emitter = new TelemetryEmitter(config, stream);
@@ -215,7 +244,6 @@ describe("TelemetryEmitter", () => {
     const config: TelemetryConfig = {
       enabled: true,
       format: "jsonl",
-      stdout: true,
       level: TelemetryLevel.INFO,
       filterEvents: [EventType.WORKFLOW_STARTED],
     };
@@ -228,6 +256,92 @@ describe("TelemetryEmitter", () => {
     const lines = stream.data.trim().split("\n").filter((l) => l.length > 0);
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]).event).toBe("workflow_started");
+  });
+
+  it("NODE_STARTED includes input data", () => {
+    const stream = new StringStream();
+    const config: TelemetryConfig = {
+      enabled: true,
+      format: "jsonl",
+      level: TelemetryLevel.INFO,
+    };
+    const emitter = new TelemetryEmitter(config, stream);
+
+    const nodeInput = { topic: "AI agents", style: "technical" };
+    emitter.emit(
+      EventType.NODE_STARTED,
+      "test-run",
+      { type: "prompt", input: nodeInput },
+      "writer_node",
+      TelemetryLevel.INFO
+    );
+    emitter.close();
+
+    const event = JSON.parse(stream.data.trim());
+    expect(event.event).toBe("node_started");
+    expect(event.node_id).toBe("writer_node");
+    expect(event.data.input).toEqual(nodeInput);
+  });
+
+  it("NODE_COMPLETED includes output data", () => {
+    const stream = new StringStream();
+    const config: TelemetryConfig = {
+      enabled: true,
+      format: "jsonl",
+      level: TelemetryLevel.INFO,
+    };
+    const emitter = new TelemetryEmitter(config, stream);
+
+    const nodeOutput = { text: "Generated article about AI agents", word_count: 500 };
+    emitter.emit(
+      EventType.NODE_COMPLETED,
+      "test-run",
+      { type: "prompt", output: nodeOutput, input_tokens: 100, output_tokens: 200 },
+      "writer_node",
+      TelemetryLevel.INFO
+    );
+    emitter.close();
+
+    const event = JSON.parse(stream.data.trim());
+    expect(event.event).toBe("node_completed");
+    expect(event.node_id).toBe("writer_node");
+    expect(event.data.output).toEqual(nodeOutput);
+    expect(event.data.input_tokens).toBe(100);
+    expect(event.data.output_tokens).toBe(200);
+  });
+
+  it("stdout and file receive the same content when format is jsonl", async () => {
+    const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "harpoon-test-"));
+    const logFile = path.join(tmpdir, "telemetry.log");
+    const stream = new StringStream();
+
+    const config: TelemetryConfig = {
+      enabled: true,
+      format: "jsonl",
+      filePath: logFile,
+      level: TelemetryLevel.INFO,
+    };
+    const emitter = new TelemetryEmitter(config, stream);
+
+    emitter.emit(EventType.NODE_STARTED, "test-run", {
+      type: "prompt",
+      input: { key: "value" },
+    }, "node1");
+    emitter.close();
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const fileContent = fs.readFileSync(logFile, "utf-8").trim();
+    const stdoutContent = stream.data.trim();
+
+    // Both should be valid JSONL with the same data
+    const fileEvent = JSON.parse(fileContent);
+    const stdoutEvent = JSON.parse(stdoutContent);
+    expect(fileEvent.event).toBe(stdoutEvent.event);
+    expect(fileEvent.data).toEqual(stdoutEvent.data);
+    expect(fileEvent.node_id).toBe(stdoutEvent.node_id);
+
+    fs.rmSync(tmpdir, { recursive: true, force: true });
   });
 });
 
@@ -246,7 +360,6 @@ describe("global emitter", () => {
     const config: TelemetryConfig = {
       enabled: true,
       format: "jsonl",
-      stdout: true,
       level: TelemetryLevel.INFO,
     };
     const emitter = new TelemetryEmitter(config, stream);

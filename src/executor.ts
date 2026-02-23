@@ -1172,7 +1172,8 @@ async function executeNodeAsync(
   const node = dag.nodes[nodeId];
   const nodeTrace = createNodeTrace(nodeId);
 
-  emit(EventType.NODE_STARTED, effectiveRunId, { type: node.type }, nodeId, TelemetryLevel.INFO);
+  const nodeInput = gatherInputs(nodeId, dag, nodeOutputs);
+  emit(EventType.NODE_STARTED, effectiveRunId, { type: node.type, input: nodeInput }, nodeId, TelemetryLevel.INFO);
 
   // Update state: node is starting
   if (state && artifactManager) {
@@ -1305,6 +1306,7 @@ async function executeNodeAsync(
       effectiveRunId,
       {
         type: node.type,
+        output: nodeTrace.output,
         input_tokens: nodeTrace.tokens["input"] ?? 0,
         output_tokens: nodeTrace.tokens["output"] ?? 0,
       },
@@ -1368,13 +1370,6 @@ export async function run(
   let { entrypoint, inputs } = options;
 
   const registry = getRegistry();
-
-  // Initialize telemetry
-  let telemetryEmitter: TelemetryEmitter | undefined;
-  if (telemetryConfig?.enabled) {
-    telemetryEmitter = new TelemetryEmitter(telemetryConfig);
-    setEmitter(telemetryEmitter);
-  }
 
   // Build DAG
   const dag = buildDag(project);
@@ -1462,6 +1457,18 @@ export async function run(
     startTime: nowIso(),
     nodes: [],
   };
+
+  // Initialize telemetry (after run ID is known so we can resolve default file path)
+  let telemetryEmitter: TelemetryEmitter | undefined;
+  if (telemetryConfig?.enabled) {
+    const resolvedConfig = { ...telemetryConfig };
+    if (!resolvedConfig.filePath) {
+      const baseDir = artifactDir ?? path.join(project.root, '.harpoon');
+      resolvedConfig.filePath = path.join(baseDir, 'runs', effectiveRunId, 'telemetry.jsonl');
+    }
+    telemetryEmitter = new TelemetryEmitter(resolvedConfig);
+    setEmitter(telemetryEmitter);
+  }
 
   // Emit workflow started event
   if (telemetryEmitter) {

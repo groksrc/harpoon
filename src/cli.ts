@@ -435,7 +435,6 @@ async function cmdProjectRun(
     telemetry: boolean;
     telemetryFormat: string;
     telemetryFile?: string;
-    telemetryStdout: boolean;
     telemetryLevel: string;
   },
 ): Promise<number> {
@@ -515,11 +514,6 @@ async function cmdProjectRun(
   // Configure telemetry
   let telemetryConfig: TelemetryConfig | undefined;
   if (options.telemetry) {
-    let telemetryStdout = options.telemetryStdout;
-    if (!telemetryStdout && !options.telemetryFile) {
-      telemetryStdout = true;
-    }
-
     const levelMap: Record<string, TelemetryLevel> = {
       debug: TelemetryLevel.DEBUG,
       info: TelemetryLevel.INFO,
@@ -532,7 +526,6 @@ async function cmdProjectRun(
       enabled: true,
       format: options.telemetryFormat as "jsonl" | "human",
       filePath: options.telemetryFile,
-      stdout: telemetryStdout,
       level: telemetryLevel,
     };
   }
@@ -848,8 +841,7 @@ projectCmd
     "Telemetry output format (jsonl or human)",
     "human",
   )
-  .option("--telemetry-file <path>", "Write telemetry to file")
-  .option("--telemetry-stdout", "Write telemetry to stdout", false)
+  .option("--telemetry-file <path>", "Write telemetry to JSONL file")
   .option(
     "--telemetry-level <level>",
     "Minimum telemetry event level (debug, info, warning, error)",

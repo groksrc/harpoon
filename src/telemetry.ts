@@ -79,7 +79,6 @@ export interface TelemetryConfig {
   enabled: boolean;
   format: 'jsonl' | 'human';
   filePath?: string;
-  stdout: boolean;
   level: TelemetryLevel;
   filterEvents?: EventType[];
 }
@@ -88,8 +87,7 @@ export interface TelemetryConfig {
 export function defaultTelemetryConfig(): TelemetryConfig {
   return {
     enabled: false,
-    format: 'jsonl',
-    stdout: true,
+    format: 'human',
     level: TelemetryLevel.INFO,
   };
 }
@@ -150,21 +148,22 @@ export class TelemetryEmitter {
   }
 
   private writeEvent(event: TelemetryEvent): void {
-    const outputLine =
+    // Write to stdout (uses config.format)
+    const stdoutLine =
       this.config.format === 'jsonl'
         ? this.formatJsonl(event)
         : this.formatHuman(event);
 
-    // Write to stdout if configured
-    if (this.config.stdout && this.outputStream === undefined) {
-      process.stdout.write(outputLine + '\n');
-    } else if (this.outputStream !== undefined) {
-      this.outputStream.write(outputLine + '\n');
+    if (this.outputStream !== undefined) {
+      this.outputStream.write(stdoutLine + '\n');
+    } else {
+      process.stdout.write(stdoutLine + '\n');
     }
 
-    // Write to file if configured
+    // Write to file (always JSONL)
     if (this.fileHandle) {
-      this.fileHandle.write(outputLine + '\n');
+      const fileLine = this.formatJsonl(event);
+      this.fileHandle.write(fileLine + '\n');
     }
   }
 
@@ -182,13 +181,12 @@ export class TelemetryEmitter {
       parts.push(`node=${event.nodeId}`);
     }
 
-    // Add important data fields
+    // Add data fields
     for (const [key, value] of Object.entries(event.data)) {
-      if (
-        typeof value === 'string' ||
-        typeof value === 'number' ||
-        typeof value === 'boolean'
-      ) {
+      if (value === null || value === undefined) continue;
+      if (typeof value === 'object') {
+        parts.push(`${key}=${JSON.stringify(value)}`);
+      } else {
         parts.push(`${key}=${value}`);
       }
     }

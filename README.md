@@ -153,11 +153,15 @@ nodes:
         args: ["@modelcontextprotocol/server-github"]
     max_turns: 50
     permission_mode: acceptEdits
+    effort: high  # low | medium | high | xhigh | max (cli mode only)
 ```
 
 **Execution Modes:**
 - `cli` - Uses Claude CLI with existing subscription (default)
 - `sdk` - Uses Claude Agent SDK with pay-per-token billing
+
+**Effort Levels** (CLI mode, passed through as `--effort`):
+Resolution order is manifest node > prompt frontmatter > unset. When unset, harpoon omits the flag so the CLI uses whatever the user set via `/effort`.
 
 ### Tool Nodes
 

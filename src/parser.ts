@@ -59,6 +59,7 @@ export interface PromptNode {
   maxTurns: number | null;
   allowedTools: string[] | string | null;
   permissionMode: string | null;
+  effort: string | null;
   entrypoint: boolean;
   next: string | NextCondition[] | null;
   loop: LoopConfig | null;
@@ -86,6 +87,7 @@ export interface AgentNode {
   mcpServers: Record<string, MCPServerConfig>;
   maxTurns: number | string | null | "__unset__";
   permissionMode: string | null;
+  effort: string | null;
   cwd: string | null;
   executionMode: string; // "cli" or "sdk"
   timeout: number | string | null;
@@ -317,6 +319,7 @@ export function parsePromptFile(filePath: string): PromptNode {
     maxTurns: (fm.max_turns as number) ?? null,
     allowedTools: (fm.allowed_tools as string[] | string) ?? null,
     permissionMode: (fm.permission_mode as string) ?? null,
+    effort: (fm.effort as string) ?? null,
     entrypoint,
     next: nextSpec,
     loop: loopConfig,

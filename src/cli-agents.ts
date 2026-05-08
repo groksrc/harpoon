@@ -360,6 +360,11 @@ export async function executeAgentViaCli(
     cmd.push("--permission-mode", cliMode);
   }
 
+  // Add effort level (--effort low|medium|high|xhigh|max)
+  if (agentNode.effort) {
+    cmd.push("--effort", agentNode.effort);
+  }
+
   // Add tools configuration
   // --tools: sets the COMPLETE tool list ("*" for all, "" to disable all)
   // --allowedTools: adds to the default set (doesn't disable anything)

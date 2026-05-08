@@ -76,6 +76,9 @@ export interface ModelDefaults {
   [key: string]: unknown;
 }
 
+/** Allowed values for the Claude CLI --effort flag. */
+const VALID_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+
 /** Loaded Harpoon project. */
 export interface Project {
   name: string;
@@ -758,6 +761,8 @@ export function loadProject(projectPath: string): Project {
           (nodeSpec["timeout"] as number | string) ?? "__unset__";
         let permissionModeRaw: string | null =
           (nodeSpec["permission_mode"] as string) ?? "__unset__";
+        let effortRaw: string | null =
+          (nodeSpec["effort"] as string) ?? "__unset__";
 
         // Load prompt file to resolve defaults
         const promptPathStr =
@@ -786,6 +791,20 @@ export function loadProject(projectPath: string): Project {
           } else {
             permissionModeRaw = "acceptEdits";
           }
+        }
+        if (effortRaw === "__unset__") {
+          effortRaw = promptNode?.effort ?? null;
+        }
+        if (
+          effortRaw !== null &&
+          !VALID_EFFORT_LEVELS.includes(
+            effortRaw as (typeof VALID_EFFORT_LEVELS)[number]
+          )
+        ) {
+          throw new ValidationError(
+            `Agent node '${nodeId}' has invalid effort '${effortRaw}'. ` +
+              `Must be one of: ${VALID_EFFORT_LEVELS.join(", ")}.`
+          );
         }
         if (maxTurns === "__unset__") {
           if (promptNode && promptNode.maxTurns === null) {
@@ -821,6 +840,7 @@ export function loadProject(projectPath: string): Project {
           mcpServers,
           maxTurns,
           permissionMode: permissionModeRaw,
+          effort: effortRaw,
           cwd: (nodeSpec["cwd"] as string) ?? null,
           executionMode,
           timeout: timeoutRaw,

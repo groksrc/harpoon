@@ -232,6 +232,7 @@ max_turns: 25                     # Iteration limit
 allowed_tools: "*"                # "*"=all, [list]=specific, omit=none
 permission_mode: acceptEdits
 execution_mode: cli               # "cli" (Claude CLI, existing subscription) or "sdk" (pay-per-token)
+effort: high                      # CLI mode only: low | medium | high | xhigh | max — omit to inherit the user's /effort default
 cwd: /path/to/workdir             # Working directory for agent execution
 ---
 Your prompt body here with {{variables}}
@@ -426,7 +427,10 @@ nodes:
     max_turns: 20
     allowed_tools: "*"        # Enable all available tools
     permission_mode: acceptEdits
+    effort: high              # Optional reasoning effort
 ```
+
+**Effort levels** (CLI mode only): `low`, `medium`, `high`, `xhigh`, `max`. Set on the agent node or in the prompt frontmatter — manifest wins over frontmatter. When unset, harpoon does not pass `--effort`, so the CLI uses whatever the user configured via `/effort`. Ignored under `execution_mode: sdk`.
 
 ### execution_mode: sdk (Agent SDK)
 

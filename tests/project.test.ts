@@ -270,6 +270,95 @@ nodes:
       expect(project.agents.worker.maxTurns).toBeNull();
     });
 
+    it("agent effort: manifest value wins", () => {
+      tmpdir = makeTmpDir();
+      fs.writeFileSync(
+        path.join(tmpdir, "agent.tml"),
+        `harpoon: "1.0"
+name: test
+nodes:
+  worker:
+    type: agent
+    prompt: prompts/worker.prompt
+    effort: high
+`
+      );
+      fs.mkdirSync(path.join(tmpdir, "prompts"));
+      fs.writeFileSync(
+        path.join(tmpdir, "prompts", "worker.prompt"),
+        `---\nid: worker\nharpoon: "1.0"\neffort: low\n---\nDo the work.\n`
+      );
+
+      const project = loadProject(tmpdir);
+      expect(project.agents.worker.effort).toBe("high");
+    });
+
+    it("agent effort: falls back to prompt frontmatter", () => {
+      tmpdir = makeTmpDir();
+      fs.writeFileSync(
+        path.join(tmpdir, "agent.tml"),
+        `harpoon: "1.0"
+name: test
+nodes:
+  worker:
+    type: agent
+    prompt: prompts/worker.prompt
+`
+      );
+      fs.mkdirSync(path.join(tmpdir, "prompts"));
+      fs.writeFileSync(
+        path.join(tmpdir, "prompts", "worker.prompt"),
+        `---\nid: worker\nharpoon: "1.0"\neffort: medium\n---\nDo the work.\n`
+      );
+
+      const project = loadProject(tmpdir);
+      expect(project.agents.worker.effort).toBe("medium");
+    });
+
+    it("agent effort: defaults to null when unset", () => {
+      tmpdir = makeTmpDir();
+      fs.writeFileSync(
+        path.join(tmpdir, "agent.tml"),
+        `harpoon: "1.0"
+name: test
+nodes:
+  worker:
+    type: agent
+    prompt: prompts/worker.prompt
+`
+      );
+      fs.mkdirSync(path.join(tmpdir, "prompts"));
+      fs.writeFileSync(
+        path.join(tmpdir, "prompts", "worker.prompt"),
+        `---\nid: worker\nharpoon: "1.0"\n---\nDo the work.\n`
+      );
+
+      const project = loadProject(tmpdir);
+      expect(project.agents.worker.effort).toBeNull();
+    });
+
+    it("agent effort: rejects invalid value", () => {
+      tmpdir = makeTmpDir();
+      fs.writeFileSync(
+        path.join(tmpdir, "agent.tml"),
+        `harpoon: "1.0"
+name: test
+nodes:
+  worker:
+    type: agent
+    prompt: prompts/worker.prompt
+    effort: turbo
+`
+      );
+      fs.mkdirSync(path.join(tmpdir, "prompts"));
+      fs.writeFileSync(
+        path.join(tmpdir, "prompts", "worker.prompt"),
+        `---\nid: worker\nharpoon: "1.0"\n---\nDo the work.\n`
+      );
+
+      expect(() => loadProject(tmpdir)).toThrow(/invalid effort/);
+    });
+
     it("parses branch nodes", () => {
       tmpdir = makeTmpDir();
       fs.writeFileSync(

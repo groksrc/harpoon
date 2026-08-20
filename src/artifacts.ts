@@ -105,6 +105,18 @@ export interface OrchestrationConfig {
   signalsDir: string;
 }
 
+/** Resolve the artifact root for a CLI run, honoring Commander's --no-artifacts flag. */
+export function resolveArtifactDirectory(
+  projectRoot: string,
+  artifactsEnabled: boolean,
+  customDirectory?: string,
+): string | undefined {
+  if (!artifactsEnabled) return undefined;
+  return customDirectory
+    ? path.resolve(customDirectory)
+    : path.join(projectRoot, ".harpoon");
+}
+
 /** Parse OrchestrationConfig from manifest orchestration section. */
 export function orchestrationConfigFromDict(data: Record<string, unknown>): OrchestrationConfig {
   const publish = (data.publish as Record<string, unknown>) ?? {};

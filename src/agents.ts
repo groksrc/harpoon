@@ -18,6 +18,8 @@ export type MessageCallback = (messageType: string, content: unknown) => void;
 export interface AgentResult {
   output: Record<string, unknown>;
   sessionId?: string;
+  requestedModel?: string;
+  resolvedModel?: string;
   numTurns: number;
   costUsd?: number;
   tokens: Record<string, number>;

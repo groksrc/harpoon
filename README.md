@@ -275,10 +275,9 @@ harpoon project run [path] [options]
   --no-artifacts               # Don't save run artifacts
   --artifact-dir PATH          # Custom artifacts directory
   --telemetry/--no-telemetry   # Enable/disable telemetry (default: enabled)
-  --telemetry-format FORMAT    # json or text
-  --telemetry-file PATH        # Write telemetry to file
-  --telemetry-stdout           # Write telemetry to stdout
-  --telemetry-level LEVEL      # debug, info, warn, error
+  --telemetry-format FORMAT    # jsonl or human (stdout; default: human)
+  --telemetry-file PATH        # Also write telemetry to a JSONL file
+  --telemetry-level LEVEL      # debug, info, warning, error
 
 # Orchestration options
   --input-from PATH            # Load inputs from file, alias:name, or run:id

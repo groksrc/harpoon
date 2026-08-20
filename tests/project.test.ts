@@ -477,6 +477,15 @@ tools:
     module: tools
     function: helper
     description: A helper tool
+    output:
+      schema:
+        result:
+          type: string
+          description: Processed result
+        warning:
+          type: string
+          description: Optional warning
+          required: false
 `
     );
 
@@ -484,6 +493,38 @@ tools:
     expect(project.tools).toHaveProperty("my_tool");
     expect(project.tools.my_tool.type).toBe("typescript");
     expect(project.tools.my_tool.description).toBe("A helper tool");
+    expect(project.tools.my_tool.outputSchema).toEqual({
+      result: {
+        type: "string",
+        description: "Processed result",
+        required: true,
+      },
+      warning: {
+        type: "string",
+        description: "Optional warning",
+        required: false,
+      },
+    });
+  });
+
+  it("rejects invalid tool output schemas", () => {
+    tmpdir = makeTmpDir();
+    fs.writeFileSync(
+      path.join(tmpdir, "agent.tml"),
+      `harpoon: "1.0"
+name: test
+tools:
+  my_tool:
+    type: typescript
+    module: tools
+    output:
+      schema:
+        result:
+          type: mystery
+`
+    );
+
+    expect(() => loadProject(tmpdir)).toThrow(/invalid type 'mystery'/);
   });
 });
 

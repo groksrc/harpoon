@@ -29,6 +29,11 @@ tools:
     module: weather
     function: get_weather
     description: Gets weather data for a city
+    output:
+      schema:
+        output:
+          type: string
+          description: Weather data serialized as JSON
 
 edges:
   input_to_weather:

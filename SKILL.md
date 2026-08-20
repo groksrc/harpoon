@@ -573,26 +573,40 @@ Listener workflows can react to signals using trigger conditions in their entryp
 
 ## Tool Nodes
 
-Tool nodes execute TypeScript functions directly without LLM prompting:
+Tool nodes execute TypeScript functions directly without LLM prompting. Define
+them in the manifest's top-level `tools:` section:
 
 ```yaml
 # In agent.tml
-nodes:
+tools:
   transform_data:
-    type: tool
-    module: tools.processors
+    type: typescript
+    module: processors
     function: transform_records
-    timeout: 30
+    output:
+      schema:
+        transformed:
+          type: boolean
+          description: Whether the transformation completed
+        count:
+          type: integer
+          description: Number of transformed records
 ```
 
 Tools must export their functions as TypeScript modules:
 
 ```typescript
 // tools/processors.ts
-export async function transform_records(data: Record<string, unknown>) {
-  return { transformed: true, count: data.length };
+export async function transform_records({ records }: { records: unknown[] }) {
+  return { transformed: true, count: records.length };
 }
 ```
+
+Tool output schemas support `string`, `number`, `integer`, `boolean`, `array`,
+and `object`. Fields are required by default; add `required: false` only when a
+successful tool result may legitimately omit a field. Harpoon uses the schema
+to validate mappings, synthesize dry-run results, and validate real tool output.
+Legacy tools without a schema continue to expose an opaque `output` field.
 
 ## Running Workflows
 

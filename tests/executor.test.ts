@@ -7,8 +7,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { run } from "../src/executor.js";
+import { loadProject } from "../src/project.js";
 import type { ExecutionResult } from "../src/executor.js";
-import { buildDag } from "../src/dag.js";
+import { buildDag, validateEdgeMappings } from "../src/dag.js";
 import {
   HarpoonError,
   NodeExecutionError,
@@ -222,6 +223,184 @@ describe("dry run execution", () => {
         (event) => event.event === "node_completed" && event.node_id === "summarize",
       );
       expect(completed.data.model).toBe("sonnet");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("routes schema-shaped tool mocks into required agent inputs and outputs", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harpoon-tool-schema-"));
+    try {
+      fs.mkdirSync(path.join(root, "prompts"));
+      fs.writeFileSync(
+        path.join(root, "agent.tml"),
+        `harpoon: "1.0"
+name: tool-schema-dry-run
+nodes:
+  input:
+    type: input
+    schema:
+      session_id: { type: string, description: Session }
+  summarize:
+    type: agent
+    prompt: prompts/summarize.prompt
+    model: sonnet
+    execution_mode: cli
+  preview:
+    type: output
+    format: json
+  output:
+    type: output
+    format: json
+tools:
+  prepare:
+    type: typescript
+    module: prepare
+    output:
+      schema:
+        job_id: { type: string, description: Job }
+        count: { type: integer, description: Count }
+        items: { type: array, description: Items }
+edges:
+  e1:
+    from: input
+    to: prepare
+    mapping: { session_id: session_id }
+  e2:
+    from: prepare
+    to: summarize
+    mapping: { job_id: job_id, count: count, items: items }
+  e3:
+    from: prepare
+    to: preview
+    mapping: { job_id: job_id, count: count, items: items }
+  e4:
+    from: summarize
+    to: output
+    mapping: { summary: summary }
+`,
+      );
+      fs.writeFileSync(
+        path.join(root, "prompts", "summarize.prompt"),
+        `---
+id: summarize
+harpoon: "1.0"
+input:
+  job_id: { type: string, required: true }
+  count: { type: integer, required: true }
+  items: { type: array, required: true }
+output:
+  format: json
+  schema:
+    summary: { type: string, description: Summary }
+---
+Summarize {{job_id}}.
+`,
+      );
+
+      const project = loadProject(root);
+      const validation = validateEdgeMappings(project, buildDag(project));
+      expect(validation.warnings).toEqual([]);
+
+      const result = await run(project, {
+        dryRun: true,
+        inputs: { session_id: "session-1" },
+      });
+      expect(result.success).toBe(true);
+      const prepare = result.trace.nodes.find((node) => node.id === "prepare");
+      expect(prepare?.output).toEqual({
+        job_id: "[mock_job_id]",
+        count: 0,
+        items: [],
+      });
+      const summarize = result.trace.nodes.find((node) => node.id === "summarize");
+      expect(summarize?.input).toEqual(prepare?.output);
+      const preview = result.trace.nodes.find((node) => node.id === "preview");
+      expect(preview?.output).toEqual(prepare?.output);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("tool output validation", () => {
+  function createToolProject(root: string, moduleName: string): Project {
+    return {
+      name: "tool-output-validation",
+      root,
+      version: "1.0",
+      description: "",
+      defaults: {},
+      entrypoints: ["input"],
+      edges: {
+        e1: {
+          id: "e1",
+          fromNode: "input",
+          toNode: "worker",
+          mappings: [{ targetVar: "value", sourceExpr: "value" }],
+        },
+        e2: {
+          id: "e2",
+          fromNode: "worker",
+          toNode: "output",
+          mappings: [{ targetVar: "result", sourceExpr: "result" }],
+        },
+      },
+      prompts: {},
+      inputNodes: { input: { id: "input", schema: { value: ["string", ""] } } },
+      outputNodes: { output: { id: "output", format: "json" } },
+      tools: {
+        worker: {
+          id: "worker",
+          type: "typescript",
+          module: moduleName,
+          function: "execute",
+          description: "",
+          outputSchema: {
+            result: { type: "string", description: "", required: true },
+            warning: { type: "string", description: "", required: false },
+          },
+        },
+      },
+      agents: {},
+      branches: {},
+      maps: {},
+      triggers: {},
+      env: {},
+    };
+  }
+
+  it("accepts valid results with omitted optional fields", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harpoon-tool-valid-"));
+    try {
+      fs.mkdirSync(path.join(root, "tools"));
+      fs.writeFileSync(
+        path.join(root, "tools", "valid.js"),
+        "export async function execute({ value }) { return { result: value }; }\n",
+      );
+      const result = await run(createToolProject(root, "valid"), {
+        inputs: { value: "ok" },
+      });
+      expect(result.success).toBe(true);
+      expect(result.outputs.output).toEqual({ result: "ok" });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects real tool results missing required schema fields", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harpoon-tool-invalid-"));
+    try {
+      fs.mkdirSync(path.join(root, "tools"));
+      fs.writeFileSync(
+        path.join(root, "tools", "invalid.js"),
+        "export async function execute() { return { warning: 'missing' }; }\n",
+      );
+      const result = await run(createToolProject(root, "invalid"), {
+        inputs: { value: "ok" },
+      });
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain("Missing required field: result");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

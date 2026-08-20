@@ -16,6 +16,7 @@ export type {
   InputNode,
   OutputNode,
   ToolDef,
+  ToolOutputField,
   ModelDefaults,
 } from "./project.js";
 

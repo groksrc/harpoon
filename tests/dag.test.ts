@@ -386,6 +386,22 @@ describe("getNodeOutputFields", () => {
     expect(fields.has("output")).toBe(true);
   });
 
+  it("tool node returns declared output schema fields", () => {
+    const project = makeProject([], []);
+    project.tools["tool1"] = {
+      id: "tool1",
+      type: "typescript",
+      module: "tool1",
+      description: "",
+      outputSchema: {
+        result: { type: "string", description: "", required: true },
+        count: { type: "integer", description: "", required: true },
+      },
+    };
+    const fields = getNodeOutputFields(project, "tool1", "tool");
+    expect(fields).toEqual(new Set(["result", "count"]));
+  });
+
   it("branch node returns output and text", () => {
     const project = makeProject([], []);
     const fields = getNodeOutputFields(project, "branch1", "branch");
@@ -457,6 +473,24 @@ describe("getNodeOutputTypes", () => {
     const project = makeProject([], []);
     const types = getNodeOutputTypes(project, "tool1", "tool");
     expect(types).toEqual({ output: null });
+  });
+
+  it("tool output schema supplies field types", () => {
+    const project = makeProject([], []);
+    project.tools["tool1"] = {
+      id: "tool1",
+      type: "typescript",
+      module: "tool1",
+      description: "",
+      outputSchema: {
+        result: { type: "string", description: "", required: true },
+        count: { type: "integer", description: "", required: true },
+      },
+    };
+    expect(getNodeOutputTypes(project, "tool1", "tool")).toEqual({
+      result: "string",
+      count: "integer",
+    });
   });
 
   it("branch output types", () => {
@@ -627,5 +661,66 @@ describe("validateEdgeMappings", () => {
       w.message.includes("Type mismatch")
     );
     expect(typeWarnings).toHaveLength(0);
+  });
+
+  it("validates tool mappings against declared fields and types", () => {
+    const project = makeProject([], []);
+    project.tools["prepare"] = {
+      id: "prepare",
+      type: "typescript",
+      module: "prepare",
+      description: "",
+      outputSchema: {
+        job_id: { type: "string", description: "", required: true },
+        count: { type: "integer", description: "", required: true },
+      },
+    };
+    project.prompts["consume"] = {
+      id: "consume",
+      harpoonVersion: "1.0",
+      name: "",
+      description: "",
+      model: null,
+      temperature: null,
+      maxTokens: null,
+      timeout: null,
+      inputs: {
+        job_id: { name: "job_id", type: "string", description: "", required: true },
+        count: { name: "count", type: "integer", description: "", required: true },
+      },
+      output: { format: "text", fields: {} },
+      body: "",
+      filePath: null,
+      maxTurns: null,
+      allowedTools: null,
+      permissionMode: null,
+      effort: null,
+      entrypoint: false,
+      next: null,
+      loop: null,
+      tools: null,
+    };
+    project.outputNodes["output"] = { id: "output", format: "json" };
+    project.edges = {
+      e1: {
+        id: "e1",
+        fromNode: "prepare",
+        toNode: "consume",
+        mappings: [
+          { targetVar: "job_id", sourceExpr: "job_id" },
+          { targetVar: "count", sourceExpr: "count" },
+        ],
+      },
+      e2: {
+        id: "e2",
+        fromNode: "consume",
+        toNode: "output",
+        mappings: [],
+      },
+    };
+    project.entrypoints = ["prepare"];
+
+    const result = validateEdgeMappings(project, buildDag(project));
+    expect(result.warnings).toEqual([]);
   });
 });

@@ -25,7 +25,7 @@ import {
 } from "./errors.js";
 import { parsePromptFile } from "./parser.js";
 import type { PromptNode } from "./parser.js";
-import type { Edge, Project } from "./project.js";
+import type { Edge, Project, ToolOutputField } from "./project.js";
 import { loadProject } from "./project.js";
 import { getRegistry } from "./providers/base.js";
 import type { CompletionConfig, ProviderRegistry } from "./providers/base.js";
@@ -177,12 +177,18 @@ function validateSchema(
     const expectedTypes: Record<string, string> = {
       string: "string",
       number: "number",
+      integer: "number",
       boolean: "boolean",
     };
     const expected = expectedTypes[fieldType];
     if (expected && typeof value !== expected) {
       throw new SchemaValidationError(
         `Field '${fieldName}' expected ${fieldType}, got ${typeof value}`
+      );
+    }
+    if (fieldType === "integer" && !Number.isInteger(value)) {
+      throw new SchemaValidationError(
+        `Field '${fieldName}' expected integer, got ${String(value)}`
       );
     }
     if (fieldType === "array" && !Array.isArray(value)) {
@@ -198,6 +204,23 @@ function validateSchema(
         `Field '${fieldName}' expected object, got ${typeof value}`
       );
     }
+  }
+}
+
+function validateToolOutput(
+  data: Record<string, unknown>,
+  schema: Record<string, ToolOutputField>,
+): void {
+  const requiredSchema = Object.fromEntries(
+    Object.entries(schema)
+      .filter(([, field]) => field.required)
+      .map(([name, field]) => [name, [field.type, field.description]]),
+  ) as Record<string, [string, string]>;
+  validateSchema(data, requiredSchema);
+
+  for (const [name, field] of Object.entries(schema)) {
+    if (field.required || !(name in data)) continue;
+    validateSchema(data, { [name]: [field.type, field.description] });
   }
 }
 
@@ -276,6 +299,7 @@ function generateMockOutput(promptNode: PromptNode): Record<string, unknown> {
   const typeDefaults: Record<string, (name: string) => unknown> = {
     string: (name) => `[mock_${name}]`,
     number: () => 0,
+    integer: () => 0,
     boolean: () => true,
     array: () => [],
     object: () => ({}),
@@ -288,6 +312,25 @@ function generateMockOutput(promptNode: PromptNode): Record<string, unknown> {
     mock[fieldName] = defaultFn(fieldName);
   }
   return { text: JSON.stringify(mock), ...mock };
+}
+
+function generateToolMockOutput(
+  schema: Record<string, ToolOutputField>,
+): Record<string, unknown> {
+  const mock: Record<string, unknown> = {};
+  const typeDefaults: Record<string, (name: string) => unknown> = {
+    string: (name) => `[mock_${name}]`,
+    number: () => 0,
+    integer: () => 0,
+    boolean: () => true,
+    array: () => [],
+    object: () => ({}),
+  };
+  for (const [fieldName, field] of Object.entries(schema)) {
+    const defaultFn = typeDefaults[field.type] ?? (() => null);
+    mock[fieldName] = defaultFn(fieldName);
+  }
+  return mock;
 }
 
 function flattenWorkflowOutputs(
@@ -501,7 +544,9 @@ async function executeToolNodeAsync(
   nodeTrace.input = gathered;
 
   if (dryRun) {
-    nodeTrace.output = { dry_run: true, ...gathered };
+    nodeTrace.output = toolDef.outputSchema && Object.keys(toolDef.outputSchema).length > 0
+      ? generateToolMockOutput(toolDef.outputSchema)
+      : { dry_run: true, ...gathered };
     return;
   }
 
@@ -515,6 +560,9 @@ async function executeToolNodeAsync(
   };
 
   const result = await toolRunner.execute(tsToolDef, gathered);
+  if (toolDef.outputSchema && Object.keys(toolDef.outputSchema).length > 0) {
+    validateToolOutput(result, toolDef.outputSchema);
+  }
   nodeTrace.output = result;
 }
 

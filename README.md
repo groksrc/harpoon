@@ -142,6 +142,7 @@ nodes:
   analyzer:
     type: agent
     prompt: prompts/analyzer.prompt
+    model: sonnet
     execution_mode: sdk  # 'sdk' or 'cli' (default: cli)
     allowed_tools:
       - Read
@@ -159,6 +160,8 @@ nodes:
 **Execution Modes:**
 - `cli` - Uses Claude CLI with existing subscription (default)
 - `sdk` - Uses Claude Agent SDK with pay-per-token billing
+
+For CLI agents, `model` is passed to Claude Code with `--model`. You can use a subscription alias such as `sonnet` or an Anthropic model identifier. Agent-node configuration takes precedence over prompt frontmatter and manifest defaults.
 
 **Effort Levels** (CLI mode, passed through as `--effort`):
 Resolution order is manifest node > prompt frontmatter > unset. When unset, harpoon omits the flag so the CLI uses whatever the user set via `/effort`.

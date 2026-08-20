@@ -126,6 +126,19 @@ export function checkCliAvailable(): string {
   );
 }
 
+/** Convert a Harpoon provider-qualified model into a Claude CLI model name. */
+export function normalizeCliModel(model: string): string {
+  if (model.startsWith("anthropic/")) {
+    return model.slice("anthropic/".length);
+  }
+  if (model.includes("/")) {
+    throw new CLIAgentError(
+      `Claude CLI agents require an Anthropic model, received '${model}'`
+    );
+  }
+  return model;
+}
+
 // ─── Token Extraction ────────────────────────────────────────
 
 function extractTokens(cliOutput: Record<string, unknown>): Record<string, number> {
@@ -334,6 +347,11 @@ export async function executeAgentViaCli(
   // stream-json requires --verbose
   if (onEvent) {
     cmd.push("--verbose");
+  }
+
+  // Pin the requested model instead of silently inheriting the CLI default.
+  if (agentNode.model) {
+    cmd.push("--model", normalizeCliModel(agentNode.model));
   }
 
   // Add JSON schema for structured outputs

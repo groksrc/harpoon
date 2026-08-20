@@ -78,6 +78,7 @@ export interface NodeTrace {
   input: Record<string, unknown>;
   output: Record<string, unknown>;
   model?: string;
+  resolvedModel?: string;
   tokens: Record<string, number>;
   skipped: boolean;
   error?: string;
@@ -531,6 +532,7 @@ async function executeAgentNodeAsync(
   if (!agentNode) {
     throw new HarpoonError("Agent definition not found in project");
   }
+  nodeTrace.model = agentNode.model ?? undefined;
 
   // Load prompt if not already loaded
   if (!agentNode.promptNode) {
@@ -628,6 +630,8 @@ async function executeAgentNodeAsync(
   nodeTrace.tokens = result.tokens;
   nodeTrace.costUsd = result.costUsd;
   nodeTrace.sessionId = result.sessionId;
+  nodeTrace.model = result.requestedModel ?? nodeTrace.model;
+  nodeTrace.resolvedModel = result.resolvedModel;
   nodeTrace.numTurns = result.numTurns;
 }
 
@@ -1311,6 +1315,8 @@ async function executeNodeAsync(
         output_tokens: nodeTrace.tokens["output"] ?? 0,
         cost_usd: nodeTrace.costUsd ?? 0,
         num_turns: nodeTrace.numTurns,
+        model: nodeTrace.model,
+        resolved_model: nodeTrace.resolvedModel,
       },
       nodeId,
       TelemetryLevel.INFO

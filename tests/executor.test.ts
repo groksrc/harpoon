@@ -19,7 +19,7 @@ import {
 import { TelemetryLevel } from "../src/telemetry.js";
 import type { TelemetryConfig } from "../src/telemetry.js";
 import type { Project, Edge, InputNode, OutputNode } from "../src/project.js";
-import type { PromptNode } from "../src/parser.js";
+import type { AgentNode, PromptNode } from "../src/parser.js";
 
 function makeSimpleProject(): Project {
   return {
@@ -99,6 +99,69 @@ function makeParallelProject(): Project {
   };
 }
 
+function makeAgentProject(root: string): Project {
+  const agent: AgentNode = {
+    id: "summarize",
+    promptPath: "prompts/summarize.prompt",
+    model: "sonnet",
+    allowedTools: [],
+    mcpServers: {},
+    maxTurns: 1,
+    permissionMode: null,
+    effort: null,
+    cwd: null,
+    executionMode: "cli",
+    timeout: 5,
+    promptNode: {
+      id: "summarize",
+      harpoonVersion: "1.0",
+      name: "Summarize",
+      description: "",
+      model: null,
+      temperature: null,
+      maxTokens: null,
+      timeout: null,
+      inputs: {},
+      output: {
+        format: "json",
+        fields: { summary: ["string", "Summary"] },
+      },
+      body: "Summarize.",
+      filePath: null,
+      maxTurns: null,
+      allowedTools: null,
+      permissionMode: null,
+      effort: null,
+      entrypoint: false,
+      next: null,
+      loop: null,
+      tools: null,
+    },
+  };
+
+  return {
+    name: "agent-test",
+    root,
+    version: "1.0",
+    description: "",
+    defaults: {},
+    entrypoints: ["input"],
+    edges: {
+      e1: { id: "e1", fromNode: "input", toNode: "summarize", mappings: [] },
+      e2: { id: "e2", fromNode: "summarize", toNode: "output", mappings: [] },
+    },
+    prompts: {},
+    inputNodes: { input: { id: "input", schema: {} } },
+    outputNodes: { output: { id: "output", format: "json" } },
+    tools: {},
+    agents: { summarize: agent },
+    branches: {},
+    maps: {},
+    triggers: {},
+    env: {},
+  };
+}
+
 describe("dry run execution", () => {
   it("returns successful result", async () => {
     const project = makeSimpleProject();
@@ -124,6 +187,44 @@ describe("dry run execution", () => {
     expect(nodeIds.has("branch_a")).toBe(true);
     expect(nodeIds.has("branch_b")).toBe(true);
     expect(nodeIds.has("output")).toBe(true);
+  });
+
+  it("records an agent's requested model in trace and telemetry", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harpoon-agent-trace-"));
+    try {
+      const project = makeAgentProject(root);
+      const artifactDir = path.join(root, ".harpoon");
+      const result = await run(project, {
+        dryRun: true,
+        artifactDir,
+        telemetryConfig: {
+          enabled: true,
+          format: "jsonl",
+          level: TelemetryLevel.INFO,
+        },
+      });
+
+      const agentTrace = result.trace.nodes.find((node) => node.id === "summarize");
+      expect(agentTrace?.model).toBe("sonnet");
+      expect(agentTrace?.resolvedModel).toBeUndefined();
+
+      const telemetryPath = path.join(
+        artifactDir,
+        "runs",
+        result.trace.runId,
+        "telemetry.jsonl",
+      );
+      const events = fs.readFileSync(telemetryPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const completed = events.find(
+        (event) => event.event === "node_completed" && event.node_id === "summarize",
+      );
+      expect(completed.data.model).toBe("sonnet");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

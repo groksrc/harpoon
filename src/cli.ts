@@ -22,7 +22,12 @@ import {
 } from "./dag.js";
 import { run } from "./executor.js";
 import type { ExecutionResult } from "./executor.js";
-import { loadRunManifest, resolveInputSource, findLatestRun } from "./artifacts.js";
+import {
+  loadRunManifest,
+  resolveInputSource,
+  findLatestRun,
+  resolveArtifactDirectory,
+} from "./artifacts.js";
 import type { RunEntry } from "./artifacts.js";
 import { waitForSignalFiles, resolveSignalPath } from "./orchestration.js";
 import { SignalTimeoutError } from "./orchestration.js";
@@ -60,6 +65,7 @@ function formatResult(
           start_time: n.startTime,
           end_time: n.endTime,
           model: n.model,
+          resolved_model: n.resolvedModel,
           tokens: n.tokens,
           skipped: n.skipped,
           error: n.error,
@@ -98,7 +104,10 @@ function formatResult(
             ? ` (${node.tokens.input ?? 0}+${node.tokens.output ?? 0} tokens)`
             : "";
         const errorMsg = node.error ? ` - ${node.error}` : "";
-        process.stdout.write(`  [${status}] ${node.id}${tokens}${errorMsg}\n`);
+        const model = node.model
+          ? ` model=${node.model}${node.resolvedModel ? ` resolved=${node.resolvedModel}` : ""}`
+          : "";
+        process.stdout.write(`  [${status}] ${node.id}${model}${tokens}${errorMsg}\n`);
       }
       process.stdout.write("\n");
     }
@@ -423,7 +432,7 @@ async function cmdProjectRun(
     trace: boolean;
     dryRun: boolean;
     verbose: boolean;
-    noArtifacts: boolean;
+    artifacts: boolean;
     artifactDir?: string;
     runId?: string;
     resume?: string;
@@ -460,14 +469,11 @@ async function cmdProjectRun(
   }
 
   // Determine artifact directory
-  let artifactDir: string | undefined;
-  if (!options.noArtifacts) {
-    if (options.artifactDir) {
-      artifactDir = path.resolve(options.artifactDir);
-    } else {
-      artifactDir = path.join(project.root, ".harpoon");
-    }
-  }
+  const artifactDir = resolveArtifactDirectory(
+    project.root,
+    options.artifacts,
+    options.artifactDir,
+  );
 
   // Handle resume
   let resumeFrom: string | undefined;

@@ -186,6 +186,9 @@ function parseCLIOutput(
   return {
     output,
     sessionId: cliOutput["session_id"] as string | undefined,
+    requestedModel: agentNode.model ?? undefined,
+    resolvedModel:
+      typeof cliOutput["model"] === "string" ? cliOutput["model"] : undefined,
     numTurns: (cliOutput["num_turns"] as number) ?? 0,
     costUsd: cliOutput["total_cost_usd"] as number | undefined,
     tokens,
@@ -283,12 +286,16 @@ function extractToolUses(
  */
 function processStreamEvent(
   event: Record<string, unknown>,
-  onEvent: TelemetryCallback
+  onEvent: TelemetryCallback,
+  onResolvedModel?: (model: string) => void,
 ): Record<string, unknown> | null {
   const eventType = event["type"] as string;
 
   if (eventType === "assistant") {
     const message = event["message"] as Record<string, unknown> | undefined;
+    if (typeof message?.model === "string" && message.model.length > 0) {
+      onResolvedModel?.(message.model);
+    }
     if (message?.content) {
       // Dispatch text content as Message events
       const text = extractTextContent(message.content);
@@ -512,6 +519,7 @@ function executeWithStreaming(
     let stderr = "";
     let stdoutBuffer = "";
     let resultEvent: Record<string, unknown> | null = null;
+    let resolvedModel: string | undefined;
 
     child.stderr?.setEncoding("utf-8");
     child.stderr?.on("data", (data: string) => {
@@ -532,7 +540,11 @@ function executeWithStreaming(
         if (!line) continue;
         try {
           const event = JSON.parse(line) as Record<string, unknown>;
-          const result = processStreamEvent(event, onEvent);
+          const result = processStreamEvent(
+            event,
+            onEvent,
+            (model) => { resolvedModel = model; },
+          );
           if (result) {
             resultEvent = result;
           }
@@ -577,7 +589,11 @@ function executeWithStreaming(
       if (stdoutBuffer.trim()) {
         try {
           const event = JSON.parse(stdoutBuffer.trim()) as Record<string, unknown>;
-          const result = processStreamEvent(event, onEvent);
+          const result = processStreamEvent(
+            event,
+            onEvent,
+            (model) => { resolvedModel = model; },
+          );
           if (result) resultEvent = result;
         } catch {
           // Skip malformed trailing data
@@ -627,7 +643,9 @@ function executeWithStreaming(
       }
 
       try {
-        resolve(parseCLIOutput(resultEvent, agentNode));
+        const parsed = parseCLIOutput(resultEvent, agentNode);
+        if (resolvedModel) parsed.resolvedModel = resolvedModel;
+        resolve(parsed);
       } catch (e) {
         reject(e);
       }

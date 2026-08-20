@@ -24,6 +24,7 @@ import {
   saveMapItemState,
   loadMapItemState,
   orchestrationConfigFromDict,
+  resolveArtifactDirectory,
 } from "../src/artifacts.js";
 import type {
   ArtifactConfig,
@@ -54,6 +55,21 @@ function makeConfig(baseDir: string, overrides?: Partial<ArtifactConfig>): Artif
     ...overrides,
   };
 }
+
+describe("artifact directory resolution", () => {
+  it("disables persistence when Commander parses --no-artifacts", () => {
+    expect(resolveArtifactDirectory("/project", false, "/custom")).toBeUndefined();
+  });
+
+  it("uses the default or custom directory when artifacts are enabled", () => {
+    expect(resolveArtifactDirectory("/project", true)).toBe(
+      path.join("/project", ".harpoon"),
+    );
+    expect(resolveArtifactDirectory("/project", true, "/custom")).toBe(
+      path.resolve("/custom"),
+    );
+  });
+});
 
 describe("RunManifest helpers", () => {
   let tmpdir: string;

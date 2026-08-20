@@ -168,24 +168,33 @@ Resolution order is manifest node > prompt frontmatter > unset. When unset, harp
 
 ### Tool Nodes
 
-Tool nodes execute TypeScript code for deterministic operations:
+Tool nodes execute TypeScript code for deterministic operations. Define them in
+the top-level `tools:` section. An output schema makes edge validation precise,
+produces realistic dry-run values, and validates real tool results:
 
 ```yaml
-nodes:
+tools:
   processor:
-    type: tool
-    handler: tools/processor.ts
-    input:
-      text: string, Input text
-
-  # Or inline JavaScript
-  validator:
-    type: tool
-    inline: |
-      export default async (input) => {
-        return { isValid: input.length > 0 };
-      };
+    type: typescript
+    module: processor
+    function: process_text
+    output:
+      schema:
+        transformed:
+          type: string
+          description: Processed text
+        count:
+          type: integer
+          description: Number of records processed
+        warning:
+          type: string
+          description: Optional diagnostic
+          required: false
 ```
+
+Supported field types are `string`, `number`, `integer`, `boolean`, `array`,
+and `object`. Declared fields are required by default. Tools without an output
+schema retain the legacy opaque `{ output: ... }` contract.
 
 ### Branch Nodes
 
@@ -344,11 +353,12 @@ nodes:
     type: tool
     module: mymodule
 
-# ✅ Correct - tool in tools section or as tool node type
-nodes:
+# ✅ Correct - tool in the top-level tools section
+tools:
   my_tool:
-    type: tool
-    handler: tools/mymodule.ts
+    type: typescript
+    module: mymodule
+    function: execute
 ```
 
 ## TypeScript API
@@ -387,6 +397,7 @@ for (const node of result.trace.nodes) {
 - **Checkpoints**: Resume interrupted runs from last successful node or specific node
 - **Artifacts**: Automatic persistence of runs, traces, and outputs in `.harpoon/`
 - **Dry Run**: Test pipelines without LLM calls
+- **Typed Tool Outputs**: Validate mappings, dry-run data, and real tool results
 - **Mermaid Visualization**: Generate interactive DAG diagrams, open in browser
 - **Telemetry**: Configurable telemetry with streaming output and multiple formats
 - **Workflow Orchestration**: Chain workflows with signals, wait conditions, and shared outputs

@@ -105,7 +105,10 @@ export function getNodeOutputFields(
     return getPromptOutputFields(getPromptForAgent(project, nodeId));
   }
   if (nodeType === "tool") {
-    return new Set(["output"]);
+    const schema = project.tools[nodeId]?.outputSchema;
+    return schema && Object.keys(schema).length > 0
+      ? new Set(Object.keys(schema))
+      : new Set(["output"]);
   }
   if (nodeType === "branch") {
     return new Set(["output", "text"]);
@@ -167,7 +170,11 @@ export function getNodeOutputTypes(
     return getPromptOutputTypes(getPromptForAgent(project, nodeId));
   }
   if (nodeType === "tool") {
-    return { output: null };
+    const schema = project.tools[nodeId]?.outputSchema;
+    if (!schema || Object.keys(schema).length === 0) return { output: null };
+    return Object.fromEntries(
+      Object.entries(schema).map(([name, field]) => [name, field.type]),
+    );
   }
   if (nodeType === "branch") {
     return { output: null, text: "string" };

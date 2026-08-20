@@ -65,6 +65,14 @@ export interface ToolDef {
   module?: string;
   function?: string;
   description: string;
+  outputSchema?: Record<string, ToolOutputField>;
+}
+
+/** One declared field in a tool's structured output contract. */
+export interface ToolOutputField {
+  type: string;
+  description: string;
+  required: boolean;
 }
 
 /** Model defaults. */
@@ -950,6 +958,69 @@ export function loadProject(projectPath: string): Project {
     >;
     for (const [toolId, toolSpec] of Object.entries(toolsSpec)) {
       if (typeof toolSpec !== "object" || toolSpec === null) continue;
+      const outputSchema: Record<string, ToolOutputField> = {};
+      if (toolSpec["output"] !== undefined) {
+        const outputSpec = toolSpec["output"];
+        if (
+          typeof outputSpec !== "object" ||
+          outputSpec === null ||
+          Array.isArray(outputSpec)
+        ) {
+          throw new ValidationError(
+            `Tool '${toolId}' output must be an object containing a schema`
+          );
+        }
+        const schemaSpec = (outputSpec as Record<string, unknown>)["schema"];
+        if (
+          typeof schemaSpec !== "object" ||
+          schemaSpec === null ||
+          Array.isArray(schemaSpec)
+        ) {
+          throw new ValidationError(
+            `Tool '${toolId}' output.schema must be an object`
+          );
+        }
+        const validTypes = new Set([
+          "string",
+          "number",
+          "integer",
+          "boolean",
+          "array",
+          "object",
+        ]);
+        for (const [fieldName, fieldSpec] of Object.entries(schemaSpec)) {
+          if (
+            typeof fieldSpec !== "object" ||
+            fieldSpec === null ||
+            Array.isArray(fieldSpec)
+          ) {
+            throw new ValidationError(
+              `Tool '${toolId}' output field '${fieldName}' must be an object`
+            );
+          }
+          const field = fieldSpec as Record<string, unknown>;
+          const fieldType = (field["type"] as string) ?? "string";
+          if (!validTypes.has(fieldType)) {
+            throw new ValidationError(
+              `Tool '${toolId}' output field '${fieldName}' has invalid type ` +
+                `'${fieldType}'`
+            );
+          }
+          if (
+            field["required"] !== undefined &&
+            typeof field["required"] !== "boolean"
+          ) {
+            throw new ValidationError(
+              `Tool '${toolId}' output field '${fieldName}' required must be boolean`
+            );
+          }
+          outputSchema[fieldName] = {
+            type: fieldType,
+            description: (field["description"] as string) ?? "",
+            required: (field["required"] as boolean | undefined) ?? true,
+          };
+        }
+      }
       project.tools[toolId] = {
         id: toolId,
         type: (toolSpec["type"] as string) ?? "typescript",
@@ -957,6 +1028,7 @@ export function loadProject(projectPath: string): Project {
         module: (toolSpec["module"] as string) ?? undefined,
         function: (toolSpec["function"] as string) ?? undefined,
         description: (toolSpec["description"] as string) ?? "",
+        outputSchema,
       };
     }
   }

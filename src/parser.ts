@@ -83,6 +83,8 @@ export interface MCPServerConfig {
 export interface AgentNode {
   id: string;
   promptPath: string;
+  /** Claude model or alias to pass to the CLI (for example, "sonnet"). */
+  model?: string | null;
   allowedTools: string[] | string | null | "__unset__";
   mcpServers: Record<string, MCPServerConfig>;
   maxTurns: number | string | null | "__unset__";

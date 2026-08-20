@@ -836,6 +836,11 @@ export function loadProject(projectPath: string): Project {
         project.agents[nodeId] = {
           id: nodeId,
           promptPath: promptPathStr,
+          model:
+            (nodeSpec["model"] as string | undefined) ??
+            promptNode?.model ??
+            defaults.model ??
+            null,
           allowedTools,
           mcpServers,
           maxTurns,

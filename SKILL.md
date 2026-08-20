@@ -423,6 +423,7 @@ nodes:
   assistant:
     type: agent
     prompt: prompts/assistant.prompt
+    model: sonnet              # Passed to Claude CLI as --model sonnet
     execution_mode: cli       # Use Claude CLI
     max_turns: 20
     allowed_tools: "*"        # Enable all available tools
@@ -431,6 +432,8 @@ nodes:
 ```
 
 **Effort levels** (CLI mode only): `low`, `medium`, `high`, `xhigh`, `max`. Set on the agent node or in the prompt frontmatter — manifest wins over frontmatter. When unset, harpoon does not pass `--effort`, so the CLI uses whatever the user configured via `/effort`. Ignored under `execution_mode: sdk`.
+
+**Model selection** (CLI mode): set `model` on the agent node, in the prompt frontmatter, or under manifest `defaults`. Resolution order is agent node, prompt, then defaults. Harpoon passes the resolved value to Claude Code with `--model`; aliases such as `sonnet` use the latest Sonnet available to the signed-in Claude subscription. Provider-qualified Anthropic names such as `anthropic/claude-sonnet-4-20250514` are accepted and normalized for the CLI.
 
 ### execution_mode: sdk (Agent SDK)
 

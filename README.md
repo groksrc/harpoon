@@ -354,7 +354,9 @@ Warnings pass by default and fail under `--strict`:
 - A group of connected nodes has no input node and no entrypoint, so no run
   input reaches it.
 - A field declares a type outside the six known types. Harpoon does not check
-  it.
+  it. This covers every declared field (input node schemas, prompt and agent
+  inputs and output fields, tool output schemas), whether or not an edge maps
+  it, with one warning per node and field.
 
 ### Type compatibility
 

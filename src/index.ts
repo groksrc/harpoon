@@ -31,6 +31,7 @@ export {
   getNodeInputFields,
   typesCompatible,
   checkEdgeContracts,
+  checkDeclaredTypes,
   KNOWN_TYPES,
 } from "./dag.js";
 export type {

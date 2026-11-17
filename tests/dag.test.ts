@@ -1149,9 +1149,61 @@ edges:
       const result = await validateProject(project);
       expect(result.errors).toEqual([]);
       expect(result.warnings).toHaveLength(1);
-      expect(result.warnings[0].message).toContain("type 'date' of 'when' in 'input' is not checked");
+      expect(result.warnings[0]).toEqual({
+        message:
+          "Node 'input' (input): type 'date' of output field 'when' is not checked. " +
+          "Known types: string, number, integer, boolean, array, object",
+        nodeId: "input",
+      });
       expect(result.valid).toBe(true);
       expect((await validateProject(project, { strict: true })).valid).toBe(false);
+    });
+
+    it("warns about an unchecked type on a field no edge maps", async () => {
+      const project = makeContractProject({ text: "string", token: "uuid" });
+      project.prompts.p = makePrompt("p", { text: { type: "string" } });
+      project.edges.e1 = edge("e1", "input", "p", { text: "text" });
+      project.edges.e2 = edge("e2", "p", "output", { text: "text" });
+      const result = await validateProject(project);
+      expect(result.errors).toEqual([]);
+      expect(result.warnings).toEqual([
+        expect.objectContaining({
+          nodeId: "input",
+          message: expect.stringContaining("type 'uuid' of output field 'token' is not checked"),
+        }),
+      ]);
+      expect(result.valid).toBe(true);
+      const strict = await validateProject(project, { strict: true });
+      expect(strict.valid).toBe(false);
+    });
+
+    it("warns about unchecked prompt input and output types once each, mapped or not", async () => {
+      const project = makeContractProject({ text: "string", when: "date" });
+      project.prompts.p = makePrompt(
+        "p",
+        {
+          text: { type: "string" },
+          when: { type: "date" },
+          spare: { type: "money", required: false },
+        },
+        { id: "uuid" }
+      );
+      // Two edges read and write the same unchecked fields.
+      project.edges.e1 = edge("e1", "input", "p", { text: "text", when: "when" });
+      project.edges.e2 = edge("e2", "p", "output", { id: "id" });
+      project.edges.e3 = edge("e3", "p", "output", { again: "id" });
+      const result = await validateProject(project);
+      expect(result.errors).toEqual([]);
+      expect(result.warnings.map((w) => w.message).sort()).toEqual(
+        [
+          "Node 'input' (input): type 'date' of output field 'when' is not checked.",
+          "Node 'p' (prompt): type 'date' of input field 'when' is not checked.",
+          "Node 'p' (prompt): type 'money' of input field 'spare' is not checked.",
+          "Node 'p' (prompt): type 'uuid' of output field 'id' is not checked.",
+        ]
+          .map((m) => `${m} Known types: string, number, integer, boolean, array, object`)
+          .sort()
+      );
     });
 
     it("reports a required input that no edge maps", async () => {
@@ -1236,6 +1288,22 @@ edges:
       expect(result.errors[0].message).toContain(
         `source field 'text' does not exist in 'writer' (agent) output. Available fields: ["summary"]`
       );
+    });
+
+    it("warns about an unchecked agent prompt type that no edge maps", async () => {
+      const writer = makePrompt(
+        "writer",
+        { topic: { type: "string" }, budget: { type: "money", default: 5 } },
+        { summary: "string", score: "percent" }
+      );
+      const project = makeAgentReviewProject(writer, "summary");
+      const result = await validateProject(project);
+      expect(result.errors).toEqual([]);
+      expect(result.warnings.map((w) => [w.nodeId, w.message.split(". Known")[0]])).toEqual([
+        ["writer", "Node 'writer' (agent): type 'money' of input field 'budget' is not checked"],
+        ["writer", "Node 'writer' (agent): type 'percent' of output field 'score' is not checked"],
+      ]);
+      expect((await validateProject(project, { strict: true })).valid).toBe(false);
     });
 
     it("accepts a declared field from a JSON agent", async () => {

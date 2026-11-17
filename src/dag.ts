@@ -374,7 +374,8 @@ function resolveSourceField(sourceExpr: string, fields: Set<string>): string {
  * - a required prompt/agent input with no default has no mapping on any
  *   incoming edge (a conditional edge counts).
  * Warnings:
- * - a declared type outside KNOWN_TYPES, which is not checked.
+ * - a declared type outside KNOWN_TYPES, which is not checked, on any
+ *   node's declaration whether or not an edge maps it (checkDeclaredTypes).
  */
 export function checkEdgeContracts(
   project: Project,
@@ -421,20 +422,6 @@ export function checkEdgeContracts(
 
       const sourceType = sourceTypes[field] ?? null;
       const targetType = targetTypes[mapping.targetVar] ?? null;
-      for (const [type, name, nodeId] of [
-        [sourceType, field, edge.fromNode],
-        [targetType, mapping.targetVar, edge.toNode],
-      ] as const) {
-        if (type !== null && !KNOWN_TYPES.has(type)) {
-          result.warnings.push({
-            message:
-              `Edge '${edge.id}': type '${type}' of '${name}' in '${nodeId}' ` +
-              `is not checked. Known types: ${[...KNOWN_TYPES].join(", ")}`,
-            edgeId: edge.id,
-            nodeId,
-          });
-        }
-      }
       if (!typesCompatible(sourceType, targetType)) {
         result.errors.push({
           message:
@@ -468,7 +455,42 @@ export function checkEdgeContracts(
     }
   }
 
+  result.warnings.push(...checkDeclaredTypes(project, dag));
+
   return result;
+}
+
+/**
+ * Warn once for every declared field type outside KNOWN_TYPES, whether or
+ * not an edge maps the field. Scans each DAG node's declarations: input node
+ * schemas, prompt and agent inputs and output fields, and tool output
+ * schemas. Branch, map and trigger fields have fixed known or dynamic types.
+ */
+export function checkDeclaredTypes(
+  project: Project,
+  dag: DAG
+): ValidationDiagnostic[] {
+  const warnings: ValidationDiagnostic[] = [];
+  const known = [...KNOWN_TYPES].join(", ");
+
+  for (const [nodeId, node] of Object.entries(dag.nodes)) {
+    for (const [direction, types] of [
+      ["input", getNodeInputTypes(project, nodeId, node.type)],
+      ["output", getNodeOutputTypes(project, nodeId, node.type)],
+    ] as const) {
+      for (const [name, type] of Object.entries(types)) {
+        if (type === null || KNOWN_TYPES.has(type)) continue;
+        warnings.push({
+          message:
+            `Node '${nodeId}' (${node.type}): type '${type}' of ${direction} ` +
+            `field '${name}' is not checked. Known types: ${known}`,
+          nodeId,
+        });
+      }
+    }
+  }
+
+  return warnings;
 }
 
 /**

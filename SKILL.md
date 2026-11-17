@@ -691,7 +691,7 @@ branch and map nodes are validated too.
 **Warnings** (pass by default, fail under `--strict`):
 - A group of connected nodes has no input node and no entrypoint.
 - A field type outside `string`, `number`, `integer`, `boolean`, `array` and
-  `object`. It is not checked.
+  `object`, on any declared field, mapped or not. It is not checked.
 
 **Type compatibility.** Identical types are compatible, and so is
 `integer` → `number`. `object` → `string` and `array` → `string` are compatible

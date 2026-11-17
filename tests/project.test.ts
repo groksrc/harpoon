@@ -838,13 +838,14 @@ edges:
       const lenient = await validateProject(project);
       expect(lenient.errors).toEqual([]);
       expect(lenient.valid).toBe(true);
-      expect(lenient.warnings).toContainEqual(
+      expect(lenient.warnings).toEqual([
         expect.objectContaining({
-          edgeId: "e2",
           nodeId: "lookup",
-          message: expect.stringContaining("type 'uuid' of 'id' in 'lookup' is not checked"),
-        })
-      );
+          message: expect.stringContaining(
+            "Node 'lookup' (tool): type 'uuid' of output field 'id' is not checked"
+          ),
+        }),
+      ]);
 
       const strict = await validateProject(project, { strict: true });
       expect(strict.valid).toBe(false);

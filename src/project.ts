@@ -1004,14 +1004,6 @@ export function loadProject(projectPath: string): Project {
             `Tool '${toolId}' output.schema must be an object`
           );
         }
-        const validTypes = new Set([
-          "string",
-          "number",
-          "integer",
-          "boolean",
-          "array",
-          "object",
-        ]);
         for (const [fieldName, fieldSpec] of Object.entries(schemaSpec)) {
           if (
             typeof fieldSpec !== "object" ||
@@ -1023,11 +1015,14 @@ export function loadProject(projectPath: string): Project {
             );
           }
           const field = fieldSpec as Record<string, unknown>;
-          const fieldType = (field["type"] as string) ?? "string";
-          if (!validTypes.has(fieldType)) {
+          const fieldType = field["type"] ?? "string";
+          // A type outside the six known types is kept, not rejected:
+          // validateProject() warns that it is not checked (MAIN-238), and
+          // validateToolOutput() checks only that the field is present.
+          if (typeof fieldType !== "string" || fieldType === "") {
             throw new ValidationError(
-              `Tool '${toolId}' output field '${fieldName}' has invalid type ` +
-                `'${fieldType}'`
+              `Tool '${toolId}' output field '${fieldName}' type must be a ` +
+                `non-empty string`
             );
           }
           if (
@@ -1060,6 +1055,13 @@ export function loadProject(projectPath: string): Project {
   // Discover and parse prompt files
   const promptsDir = path.join(root, "prompts");
   if (existsSync(promptsDir)) {
+    // Agent prompts that failed to parse above. validateProject() reports
+    // each against its agent node, so discovery must not throw on them first.
+    const brokenAgentPrompts = new Set(
+      Object.values(project.agents)
+        .filter((agent) => agent.promptNode === null)
+        .map((agent) => path.resolve(root, agent.promptPath))
+    );
     const promptFiles = readdirSync(promptsDir).filter((f) =>
       f.endsWith(".prompt")
     );
@@ -1069,6 +1071,7 @@ export function loadProject(projectPath: string): Project {
         const node = parsePromptFile(fullPath);
         project.prompts[node.id] = node;
       } catch (e) {
+        if (brokenAgentPrompts.has(path.resolve(fullPath))) continue;
         if (e instanceof ParseError) throw e;
         throw new ParseError(
           `Error parsing ${fullPath}: ${e instanceof Error ? e.message : String(e)}`

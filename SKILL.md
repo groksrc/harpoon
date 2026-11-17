@@ -699,7 +699,7 @@ npm update -g harpoon-cli
 harpoon --version
 
 # Use with npx (Node.js 20+)
-npx harpoon-cli@latest run ./my-workflow
+npx harpoon-cli@latest project run ./my-workflow
 ```
 
 ## Template Syntax

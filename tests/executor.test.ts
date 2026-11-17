@@ -397,6 +397,28 @@ describe("tool output validation", () => {
     }
   });
 
+  it("runs a tool whose output field has a type outside the known types", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harpoon-tool-uuid-"));
+    try {
+      fs.mkdirSync(path.join(root, "tools"));
+      fs.writeFileSync(
+        path.join(root, "tools", "uuid.js"),
+        "export async function execute() { return { result: 'a1b2-c3d4' }; }\n",
+      );
+      const project = createToolProject(root, "uuid");
+      project.tools.worker.outputSchema = {
+        result: { type: "uuid", description: "", required: true },
+      };
+      // The unchecked type warns (passing validation) and the field is
+      // still required to be present at runtime.
+      const result = await run(project, { inputs: { value: "ok" } });
+      expect(result.success).toBe(true);
+      expect(result.outputs.output).toEqual({ result: "a1b2-c3d4" });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects real tool results missing required schema fields", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "harpoon-tool-invalid-"));
     try {

@@ -508,7 +508,7 @@ tools:
     });
   });
 
-  it("rejects invalid tool output schemas", () => {
+  it("keeps a tool output type outside the known types", () => {
     tmpdir = makeTmpDir();
     fs.writeFileSync(
       path.join(tmpdir, "agent.tml"),
@@ -525,7 +525,30 @@ tools:
 `
     );
 
-    expect(() => loadProject(tmpdir)).toThrow(/invalid type 'mystery'/);
+    const project = loadProject(tmpdir);
+    expect(project.tools.my_tool.outputSchema.result.type).toBe("mystery");
+  });
+
+  it("rejects a tool output type that is not a string", () => {
+    tmpdir = makeTmpDir();
+    fs.writeFileSync(
+      path.join(tmpdir, "agent.tml"),
+      `harpoon: "1.0"
+name: test
+tools:
+  my_tool:
+    type: typescript
+    module: tools
+    output:
+      schema:
+        result:
+          type: 5
+`
+    );
+
+    expect(() => loadProject(tmpdir)).toThrow(
+      /output field 'result' type must be a non-empty string/
+    );
   });
 
   describe("problems kept for validateProject()", () => {
@@ -682,6 +705,114 @@ edges:
         "Agent 'writer': cannot parse prompt file agents/writer.prompt"
       );
       expect(error?.message).toContain("missing frontmatter delimiters");
+    });
+
+    it("reports a malformed agent prompt under prompts/ instead of throwing", async () => {
+      tmpdir = makeTmpDir();
+      fs.writeFileSync(
+        path.join(tmpdir, "agent.tml"),
+        `harpoon: "1.0"
+name: test
+nodes:
+  input:
+    type: input
+  writer:
+    type: agent
+    prompt: prompts/writer.prompt
+edges:
+  e1: { from: input, to: writer }
+`
+      );
+      // prompt discovery also parses every file in prompts/.
+      fs.mkdirSync(path.join(tmpdir, "prompts"));
+      fs.writeFileSync(
+        path.join(tmpdir, "prompts", "writer.prompt"),
+        "no frontmatter here\n"
+      );
+
+      const project = loadProject(tmpdir);
+      expect(project.agents.writer.promptNode).toBeNull();
+      expect(project.prompts).not.toHaveProperty("writer");
+
+      const result = await validateProject(project);
+      expect(result.valid).toBe(false);
+      const error = result.errors.find((e) => e.nodeId === "writer");
+      expect(error?.message).toContain(
+        "Agent 'writer': cannot parse prompt file prompts/writer.prompt"
+      );
+      expect(error?.message).toContain("missing frontmatter delimiters");
+    });
+
+    it("still throws for a malformed prompt under prompts/ that no agent uses", () => {
+      tmpdir = makeTmpDir();
+      fs.writeFileSync(
+        path.join(tmpdir, "agent.tml"),
+        `harpoon: "1.0"
+name: test
+nodes:
+  input:
+    type: input
+`
+      );
+      fs.mkdirSync(path.join(tmpdir, "prompts"));
+      fs.writeFileSync(
+        path.join(tmpdir, "prompts", "broken.prompt"),
+        "no frontmatter here\n"
+      );
+
+      expect(() => loadProject(tmpdir)).toThrow(ParseError);
+    });
+
+    it("warns about a loaded tool output type outside the known types", async () => {
+      tmpdir = makeTmpDir();
+      fs.writeFileSync(
+        path.join(tmpdir, "agent.tml"),
+        `harpoon: "1.0"
+name: test
+nodes:
+  input:
+    type: input
+    schema:
+      query: { type: string, description: Search text }
+  done:
+    type: output
+tools:
+  lookup:
+    type: typescript
+    module: tools
+    function: lookup
+    output:
+      schema:
+        id:
+          type: uuid
+edges:
+  e1:
+    from: input
+    to: lookup
+    mapping: { query: query }
+  e2:
+    from: lookup
+    to: done
+    mapping: { id: id }
+`
+      );
+
+      const project = loadProject(tmpdir);
+      expect(project.tools.lookup.outputSchema.id.type).toBe("uuid");
+
+      const lenient = await validateProject(project);
+      expect(lenient.errors).toEqual([]);
+      expect(lenient.valid).toBe(true);
+      expect(lenient.warnings).toContainEqual(
+        expect.objectContaining({
+          edgeId: "e2",
+          nodeId: "lookup",
+          message: expect.stringContaining("type 'uuid' of 'id' in 'lookup' is not checked"),
+        })
+      );
+
+      const strict = await validateProject(project, { strict: true });
+      expect(strict.valid).toBe(false);
     });
   });
 });

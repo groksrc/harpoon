@@ -307,41 +307,99 @@ harpoon project schedule ./my-project --format launchd  # Generate launchd plist
 
 ## Validation
 
-Harpoon validates your workflow at multiple levels:
+`harpoon project validate` and `harpoon project run` use the same validator
+(`validateProject()`). Validation fails on any error. A run refuses an invalid
+project before any node executes, with or without `--dry-run`.
 
-### Basic Validation
 ```bash
-harpoon project validate ./my-project
+harpoon project validate ./my-project           # exit 2 on any error
+harpoon project validate ./my-project --strict  # exit 2 on any error or warning
 ```
 
-Checks:
-- Manifest syntax and required fields
-- DAG structure (no cycles, valid node references)
-- Edge mapping warnings (source/target field mismatches)
+Branch and map sub-workflows are validated too. Their messages start with the
+node that refers to them, such as `Branch 'loop' (./workflows/build.tml): ...`.
 
-### Strict Mode
-```bash
-harpoon project validate ./my-project --strict
-```
+### Errors
 
-In strict mode, warnings become errors. Use this in CI/CD to catch:
-- Edge mappings that reference non-existent output fields
-- Edge mappings that target unexpected input fields
+Structure:
+- An edge references a node that does not exist.
+- The graph has a cycle.
+- A manifest node has a `type` other than `input`, `output`, `prompt`, `tool`,
+  `agent`, `branch`, `map` or `trigger`.
+- An agent's prompt file is missing or does not parse.
+- A declared entrypoint, or the `--entrypoint` value, is not a node.
+- A branch or map sub-workflow is missing, circular or invalid.
+
+Edge contracts, checked for every edge mapping (`target: source`):
+- The source field is not an output of the source node. Only nodes with a fixed
+  field list are checked: input nodes with a `schema`, prompts, agents, and
+  tools with an `output.schema`. Branch, map and trigger outputs, tools without
+  a schema, and input nodes without a schema are dynamic and not checked.
+- The target field is not a declared input of a prompt or agent target. Output,
+  branch, map, trigger and tool targets accept any field.
+- The source and target types are both known and incompatible (see the table).
+- A prompt or agent input is required (the default) and has no `default`, and
+  no incoming edge maps it. A mapping on a conditional edge counts.
+
+Fan-out, fan-in and nodes with several parents are all valid.
+
+### Warnings
+
+Warnings pass by default and fail under `--strict`:
+- A group of connected nodes has no input node and no entrypoint, so no run
+  input reaches it.
+- A field declares a type outside the six known types. Harpoon does not check
+  it.
+
+### Type compatibility
+
+The known types are `string`, `number`, `integer`, `boolean`, `array` and
+`object`. A field without a declared type (such as a tool output without a
+schema) is always compatible.
+
+| Source → target | Result |
+|---|---|
+| Same type | Compatible |
+| `integer` → `number` | Compatible |
+| `object` → `string`, `array` → `string` | Compatible: the value is rendered as JSON |
+| `number` → `integer` | Error: a runtime value such as `0.5` is not an integer |
+| Any other pair of known types | Error |
+
+### Checks during a run
+
+- Run inputs are type-checked against each input node's `schema` before any
+  node runs. Only the fields you pass are checked. A missing required field
+  fails at the node that needs it.
+- Prompt and agent JSON output must contain every field in the prompt's
+  `output.schema`, with the declared type. Tool output is checked against the
+  tool's `output.schema`. A failed check stops the run before downstream nodes.
 
 ### Example Output
 ```
 Project: my-project
-  Prompts: 2
-  Tools: 1
-  Edges: 3
-  Nodes in execution order: 4
+  Prompts: 1
+  Tools: 0
+  Agents: 0
+  Branches: 0
+  Maps: 0
+  Edges: 2
+  Nodes in execution order: 3
 
-Warnings:
-  ⚠ Target field 'wrong_name' not expected by 'process' (prompt).
-    Expected inputs: ['content'] (edge: e1)
-
-✓ Validation passed
+Validation failed: 2 error(s)
+  x Edge 'e1': Type mismatch: 'ratio' (number) from 'input' cannot feed 'limit' (integer) in 'process'
+  x Node 'process' (prompt): required input 'style' has no default and no incoming edge maps it
 ```
+
+### Upgrading from 1.4.1 or earlier (breaking change)
+
+Version 1.4.1 and earlier only warned about type mismatches and missing fields, and
+`harpoon project run` never checked them. A workflow that used to run with
+those warnings now fails validation. Common fixes:
+- `number` → `integer`: declare the target as `number`, or the source as
+  `integer`.
+- An unmapped required input: map it on an incoming edge, give it a `default`,
+  or mark it `required: false`.
+- A misspelled source or target field: match the names in the schemas.
 
 ### Common Validation Errors
 

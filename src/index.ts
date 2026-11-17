@@ -8,7 +8,7 @@
 export { VERSION } from "./version.js";
 
 // Project loading
-export { loadProject, loadDotenv } from "./project.js";
+export { loadProject, loadDotenv, NODE_TYPES } from "./project.js";
 export type {
   Project,
   Edge,
@@ -30,13 +30,24 @@ export {
   getNodeOutputFields,
   getNodeInputFields,
   typesCompatible,
+  checkEdgeContracts,
+  KNOWN_TYPES,
 } from "./dag.js";
 export type {
   DAG,
   DAGNode,
   ValidationResult,
   ValidationWarning,
+  ValidationDiagnostic,
+  ValidationDiagnostics,
 } from "./dag.js";
+
+// Whole-project validation (used by `harpoon project validate` and run())
+export { validateProject, formatDiagnostics } from "./validate.js";
+export type {
+  ValidateProjectOptions,
+  ProjectValidationResult,
+} from "./validate.js";
 
 // Execution engine
 export { run } from "./executor.js";

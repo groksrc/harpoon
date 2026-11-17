@@ -60,13 +60,23 @@ edges:
   e1:
     from: input
     to: research
+    mapping:
+      topic: topic                # target input: source field
   e2:
     from: research
     to: summarize
+    mapping:
+      findings: findings
+      topic: topic
   e3:
     from: summarize
     to: output
+    mapping:
+      summary: summary
 ```
+
+Each edge copies only the fields in its `mapping`. A required input that no
+edge maps fails validation.
 
 ```yaml
 # prompts/research.prompt
@@ -115,7 +125,7 @@ Produce a clear, concise summary.
 ### Run It
 
 ```bash
-harpoon run ./my-workflow --input '{"topic": "renewable energy trends"}'
+harpoon project run ./my-workflow --input '{"topic": "renewable energy trends"}'
 ```
 
 ### Simple Prompt Chains (Single-Shot Inference)
@@ -318,7 +328,7 @@ Use the fetch_data tool to gather information.
 
 ## When to Use agent.tml
 
-You can always run prompt-first workflows without a manifest — just name your `.prompt` files so the execution order is obvious (e.g., `01_classify.prompt`, `02_respond.prompt`) and ensure the frontmatter is correct (`entrypoint`, `next`, input/output schemas).
+You can always run prompt-first workflows without a manifest — just ensure the frontmatter is correct (`entrypoint`, `next`, input/output schemas). Name each `.prompt` file after its `id` (`classify.prompt` for `id: classify`): Harpoon resolves `next: prompts/respond.prompt` to the prompt whose `id` is `respond`, so a file named `02_respond.prompt` is not found.
 
 Use `agent.tml` when you need features beyond simple chaining:
 
@@ -611,27 +621,70 @@ Legacy tools without a schema continue to expose an opaque `output` field.
 ## Running Workflows
 
 ```bash
-# Validate
-harpoon validate ./my-workflow
+# Validate (exit 2 on any error; --strict also fails on warnings)
+harpoon project validate ./my-workflow
+harpoon project validate ./my-workflow --strict
 
 # Dry run (no LLM calls)
-harpoon run ./my-workflow --dry-run --input '{"message": "test"}'
+harpoon project run ./my-workflow --dry-run --input '{"message": "test"}'
 
 # Execute
-harpoon run ./my-workflow --input '{"message": "hello"}'
+harpoon project run ./my-workflow --input '{"message": "hello"}'
 
 # With telemetry
-harpoon run ./my-workflow --input '{"message": "hello"}' --telemetry
+harpoon project run ./my-workflow --input '{"message": "hello"}' --telemetry
 
 # Resume interrupted run
-harpoon run ./my-workflow --resume latest
+harpoon project run ./my-workflow --resume latest
 
 # Replay from specific node
-harpoon run ./my-workflow --resume latest --start-from refine
+harpoon project run ./my-workflow --resume latest --start-from refine
 
 # Visualize DAG
-harpoon graph ./my-workflow --open
+harpoon project graph ./my-workflow --open
 ```
+
+## Validation
+
+Run `harpoon project validate --strict` after you write or change a workflow.
+`harpoon project run` uses the same validator and refuses an invalid workflow
+before any node runs, in every mode, including `--dry-run`. Sub-workflows of
+branch and map nodes are validated too.
+
+**Errors** (validation fails, exit code 2):
+- An edge references a node that does not exist, or the graph has a cycle.
+- A manifest node's `type` is not `input`, `output`, `prompt`, `tool`, `agent`,
+  `branch`, `map` or `trigger`.
+- An agent's prompt file is missing or does not parse.
+- A declared entrypoint, or the `--entrypoint` value, is not a node.
+- A branch or map sub-workflow is missing, circular or invalid.
+- A mapping reads a field the source does not output. This is checked for
+  input nodes with a `schema`, prompts, agents, and tools with an
+  `output.schema`. Branch, map and trigger outputs, and tools without a schema,
+  are not checked.
+- A mapping writes a field that a prompt or agent target does not declare
+  under `input:`.
+- The source and target field types are both known and incompatible.
+- A required prompt or agent input with no `default` has no incoming mapping.
+  Inputs are required unless you set `required: false`. A mapping on a
+  conditional edge counts.
+
+**Warnings** (pass by default, fail under `--strict`):
+- A group of connected nodes has no input node and no entrypoint.
+- A field type outside `string`, `number`, `integer`, `boolean`, `array` and
+  `object`. It is not checked.
+
+**Type compatibility.** Identical types are compatible, and so is
+`integer` → `number`. `object` → `string` and `array` → `string` are compatible
+because the template renders the value as JSON. Every other pair of known types
+is an error, including `number` → `integer`. A field with no declared type
+(such as a tool output without a schema) is always compatible.
+
+**During a run**, Harpoon also rejects a run input whose type does not match the
+input node's `schema`, and fails a prompt or agent whose JSON output is missing
+a declared field or has the wrong type. Downstream nodes do not run.
+
+Fan-out, fan-in and nodes with several parents are valid.
 
 ## Installation and Upgrade
 
@@ -724,11 +777,11 @@ This is a good use case for prompt nodes — simple single-shot classification a
 sentiment-workflow/
   .env
   prompts/
-    01_classify.prompt
-    02_respond.prompt
+    classify.prompt
+    respond.prompt
 ```
 
-**prompts/01_classify.prompt:**
+**prompts/classify.prompt:**
 ```yaml
 ---
 id: classify
@@ -754,7 +807,7 @@ output:
       type: string
       description: Original message (pass through)
 
-next: prompts/02_respond.prompt
+next: prompts/respond.prompt
 ---
 Analyze the sentiment of this message:
 
@@ -763,7 +816,7 @@ Analyze the sentiment of this message:
 Return the sentiment (positive/negative/neutral), your confidence (0-100), and include the original message.
 ```
 
-**prompts/02_respond.prompt:**
+**prompts/respond.prompt:**
 ```yaml
 ---
 id: respond
@@ -802,7 +855,7 @@ Generate an appropriate response. Match their energy if positive, be empathetic 
 
 **Run:**
 ```bash
-harpoon run ./sentiment-workflow \
+harpoon project run ./sentiment-workflow \
   --input '{"message": "This product exceeded my expectations!"}' \
   --verbose
 ```

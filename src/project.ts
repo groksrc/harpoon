@@ -106,7 +106,25 @@ export interface Project {
   triggers: Record<string, TriggerNode>;
   env: Record<string, Record<string, unknown>>;
   orchestration?: OrchestrationConfig;
+  /**
+   * Manifest nodes whose `type` is not a known node type, as node ID ->
+   * declared type. loadProject() records them here instead of dropping them,
+   * so validateProject() can report each one as an error.
+   */
+  unknownTypeNodes?: Record<string, string>;
 }
+
+/** The node types a manifest may declare under `nodes:`. */
+export const NODE_TYPES: readonly string[] = [
+  "input",
+  "output",
+  "prompt",
+  "tool",
+  "agent",
+  "branch",
+  "map",
+  "trigger",
+];
 
 // ─── .env Loading ────────────────────────────────────────────
 
@@ -781,7 +799,7 @@ export function loadProject(projectPath: string): Project {
           try {
             promptNode = parsePromptFile(promptFullPath);
           } catch {
-            // Will be handled at execution time
+            // promptNode stays null; validateProject() reports the parse error.
           }
         }
 
@@ -918,6 +936,12 @@ export function loadProject(projectPath: string): Project {
           emitSignal: (nodeSpec["emit_signal"] as boolean) ?? true,
           condition: (nodeSpec["condition"] as string) ?? null,
         };
+      } else if (nodeType === "prompt") {
+        // Prompt nodes come from the .prompt files discovered below.
+      } else {
+        // Keep the node visible to validation instead of dropping it.
+        project.unknownTypeNodes ??= {};
+        project.unknownTypeNodes[nodeId] = String(nodeType);
       }
     }
   }
@@ -1073,6 +1097,9 @@ export function loadProject(projectPath: string): Project {
     ...Object.keys(project.branches),
     ...Object.keys(project.maps),
     ...Object.keys(project.triggers),
+    // A node with an unknown type is declared, so an edge to it must not
+    // turn it into an implicit input or output node.
+    ...Object.keys(project.unknownTypeNodes ?? {}),
   ]);
 
   for (const nodeId of allFromNodes) {

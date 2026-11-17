@@ -10,19 +10,17 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
 import { evaluate } from "./conditions.js";
-import {
-  buildDag,
-  getAncestors,
-  validateEdgeMappings,
-} from "./dag.js";
+import { getAncestors } from "./dag.js";
 import type { DAG } from "./dag.js";
 import {
   HarpoonError,
   NodeExecutionError,
   SchemaValidationError,
+  ValidationError,
   BranchError,
   MapError,
 } from "./errors.js";
+import { formatDiagnostics, validateProject } from "./validate.js";
 import { parsePromptFile } from "./parser.js";
 import type { PromptNode } from "./parser.js";
 import type { Edge, Project, ToolOutputField } from "./project.js";
@@ -242,6 +240,27 @@ function validateRequiredInputs(
       `Missing required input(s) for '${promptNode.id}': ${missing.join(", ")}. ` +
         `Check edge mappings to ensure these fields are provided.`
     );
+  }
+}
+
+function validateRunInputs(
+  project: Project,
+  inputs: Record<string, unknown>
+): void {
+  for (const [nodeId, inputNode] of Object.entries(project.inputNodes)) {
+    const provided = Object.fromEntries(
+      Object.entries(inputNode.schema).filter(
+        ([name]) => inputs[name] !== undefined && inputs[name] !== null
+      )
+    );
+    try {
+      validateSchema(inputs, provided);
+    } catch (e) {
+      if (!(e instanceof SchemaValidationError)) throw e;
+      throw new ValidationError(
+        `Run input rejected by input node '${nodeId}': ${e.message}`
+      );
+    }
   }
 }
 
@@ -674,13 +693,24 @@ async function executeAgentNodeAsync(
     );
   }
 
-  nodeTrace.output = result.output;
   nodeTrace.tokens = result.tokens;
   nodeTrace.costUsd = result.costUsd;
   nodeTrace.sessionId = result.sessionId;
   nodeTrace.model = result.requestedModel ?? nodeTrace.model;
   nodeTrace.resolvedModel = result.resolvedModel;
   nodeTrace.numTurns = result.numTurns;
+
+  // Check JSON output against the prompt's declared fields, as the prompt
+  // node path does, so a bad result fails here and never reaches downstream.
+  const outputSchema = agentNode.promptNode.output;
+  if (
+    outputSchema.format === "json" &&
+    Object.keys(outputSchema.fields).length > 0
+  ) {
+    validateSchema(result.output, outputSchema.fields);
+  }
+
+  nodeTrace.output = result.output;
 }
 
 async function executeBranchNodeAsync(
@@ -1427,20 +1457,20 @@ export async function run(
 
   const registry = getRegistry();
 
-  // Build DAG
-  const dag = buildDag(project);
-
-  // Validate edge mappings in dry-run or verbose mode
-  if (dryRun || verbose) {
-    const validation = validateEdgeMappings(project, dag);
-    if (validation.warnings.length > 0) {
-      process.stderr.write("Warning: Edge mapping warnings:\n");
-      for (const warning of validation.warnings) {
-        process.stderr.write(`  - ${warning.message}\n`);
-      }
-      process.stderr.write("\n");
-    }
+  // Validate structure and contracts before any node runs, in every mode.
+  const validation = await validateProject(project, { entrypoint });
+  if ((dryRun || verbose) && validation.warnings.length > 0) {
+    process.stderr.write("Warning: Validation warnings:\n");
+    process.stderr.write(`${formatDiagnostics(validation.warnings)}\n\n`);
   }
+  if (!validation.valid || !validation.dag) {
+    throw new ValidationError(
+      `Project '${project.name}' failed validation with ` +
+        `${validation.errors.length} error(s):\n` +
+        formatDiagnostics(validation.errors)
+    );
+  }
+  const dag = validation.dag;
 
   // Validate start_from requires resume_from
   if (startFrom && !resumeFrom) {
@@ -1504,6 +1534,14 @@ export async function run(
         }
       }
     }
+  }
+
+  // Type-check run inputs against each input node's schema before any node
+  // runs. Only fields present (and not null) are checked: input schemas have
+  // no `required` flag, and a missing required field is caught by
+  // validateRequiredInputs() at the node that consumes it.
+  if (inputs) {
+    validateRunInputs(project, inputs);
   }
 
   // Initialize execution state

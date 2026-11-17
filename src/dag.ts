@@ -5,9 +5,6 @@
  * performs topological sorting, and validates edge mappings.
  */
 
-import * as nodePath from "node:path";
-import { existsSync } from "node:fs";
-
 import { DAGError } from "./errors.js";
 import type { PromptNode } from "./parser.js";
 import type { Edge, Project } from "./project.js";
@@ -22,11 +19,23 @@ export interface ValidationWarning {
   nodeId?: string;
 }
 
-/** Result of DAG validation. */
+/**
+ * One validation finding, error or warning, with the node and edge it is
+ * about. The message names them too, so it reads on its own.
+ */
+export type ValidationDiagnostic = ValidationWarning;
+
+/** Result of DAG validation (legacy shape: errors are plain messages). */
 export interface ValidationResult {
   valid: boolean;
   errors: string[];
   warnings: ValidationWarning[];
+}
+
+/** Errors and warnings from a validation pass that collects instead of throwing. */
+export interface ValidationDiagnostics {
+  errors: ValidationDiagnostic[];
+  warnings: ValidationDiagnostic[];
 }
 
 /** Node in the execution DAG. */
@@ -63,6 +72,9 @@ function getPromptForAgent(
 ): PromptNode | undefined {
   const agent = project.agents[nodeId];
   if (!agent) return undefined;
+  // loadProject() parses the agent's own prompt file into promptNode; prefer
+  // it, because a prompt outside prompts/ has no entry in project.prompts.
+  if (agent.promptNode) return agent.promptNode;
   const promptId = extractPromptId(agent.promptPath);
   return project.prompts[promptId];
 }
@@ -180,7 +192,8 @@ export function getNodeOutputTypes(
     return { output: null, text: "string" };
   }
   if (nodeType === "map") {
-    return { items: "array", count: "number" };
+    // count is items.length, always a whole number.
+    return { items: "array", count: "integer" };
   }
   if (nodeType === "trigger") {
     return { triggered: "boolean", status: "string", output: null };
@@ -215,95 +228,175 @@ export function getNodeInputTypes(
   return {}; // output, input, branch, map, trigger accept any types
 }
 
-/** Check if source type is compatible with target type. */
+/** The value types the static validator understands. */
+export const KNOWN_TYPES: ReadonlySet<string> = new Set([
+  "string",
+  "number",
+  "integer",
+  "boolean",
+  "array",
+  "object",
+]);
+
+/**
+ * Pairs of different known types that may flow along an edge, as
+ * "source:target". integer -> number widens. object/array -> string works
+ * because the template renderer serializes them as JSON (src/template.ts).
+ * number -> integer is not here: validateSchema() rejects a non-integer.
+ */
+const COMPATIBLE_TYPE_PAIRS: ReadonlySet<string> = new Set([
+  "integer:number",
+  "object:string",
+  "array:string",
+]);
+
+/**
+ * Check if source type is compatible with target type.
+ *
+ * null means undeclared or dynamic and is always compatible. A type outside
+ * KNOWN_TYPES is not checked, so it is treated as compatible; the contract
+ * checker warns about it separately.
+ */
 export function typesCompatible(
   sourceType: string | null,
   targetType: string | null
 ): boolean {
   if (sourceType === null || targetType === null) return true;
   if (sourceType === targetType) return true;
-
-  const compatiblePairs = new Set([
-    "integer:number",
-    "number:integer",
-    "object:string",
-    "array:string",
-  ]);
-  return compatiblePairs.has(`${sourceType}:${targetType}`);
+  if (!KNOWN_TYPES.has(sourceType) || !KNOWN_TYPES.has(targetType)) return true;
+  return COMPATIBLE_TYPE_PAIRS.has(`${sourceType}:${targetType}`);
 }
 
-// ─── Edge Mapping Validation ─────────────────────────────────
+// ─── Edge Contract Validation ────────────────────────────────
 
-/** Validate edge mappings against node input/output contracts. */
-export function validateEdgeMappings(
+/**
+ * Whether a node's output field list is fixed, so a mapping that reads a
+ * field outside it is an error. Prompt and agent nodes always have a fixed
+ * list; input nodes only when they declare a schema; tools only with an
+ * output schema. Branch, map and trigger outputs depend on a sub-workflow.
+ */
+function hasFixedOutputFields(
   project: Project,
-  dag: DAG,
-  strict = false
-): ValidationResult {
-  const result: ValidationResult = { valid: true, errors: [], warnings: [] };
+  nodeId: string,
+  nodeType: string
+): boolean {
+  if (nodeType === "prompt") return project.prompts[nodeId] !== undefined;
+  if (nodeType === "agent") return getPromptForAgent(project, nodeId) !== undefined;
+  if (nodeType === "input") {
+    const node = project.inputNodes[nodeId];
+    return node !== undefined && Object.keys(node.schema).length > 0;
+  }
+  if (nodeType === "tool") {
+    const schema = project.tools[nodeId]?.outputSchema;
+    return schema !== undefined && Object.keys(schema).length > 0;
+  }
+  return false;
+}
+
+/** The prompt that declares a prompt or agent node's inputs, if known. */
+function getDeclaringPrompt(
+  project: Project,
+  nodeId: string,
+  nodeType: string
+): PromptNode | undefined {
+  if (nodeType === "prompt") return project.prompts[nodeId];
+  if (nodeType === "agent") return getPromptForAgent(project, nodeId);
+  return undefined;
+}
+
+/**
+ * Resolve the output field a mapping reads. Mirrors gatherInputs() in
+ * src/executor.ts: "a.b" reads field "a"; when that misses, an "output."
+ * prefix is dropped, so "output.a.b" also reads field "a".
+ */
+function resolveSourceField(sourceExpr: string, fields: Set<string>): string {
+  const parts = sourceExpr.split(".");
+  if (!fields.has(parts[0]) && parts[0] === "output" && parts.length > 1) {
+    return parts[1];
+  }
+  return parts[0];
+}
+
+/**
+ * Check every edge mapping against the declared contracts of the nodes it
+ * connects, and every required prompt/agent input against the edges that
+ * feed it. Never throws. Edges whose endpoints are not in the DAG are skipped
+ * (the structural check reports them).
+ *
+ * Errors:
+ * - a mapping reads a field the source does not output (fixed lists only);
+ * - a mapping writes a field the prompt/agent target does not declare;
+ * - both types are known and incompatible (see typesCompatible);
+ * - a required prompt/agent input with no default has no mapping on any
+ *   incoming edge (a conditional edge counts).
+ * Warnings:
+ * - a declared type outside KNOWN_TYPES, which is not checked.
+ */
+export function checkEdgeContracts(
+  project: Project,
+  dag: DAG
+): ValidationDiagnostics {
+  const result: ValidationDiagnostics = { errors: [], warnings: [] };
 
   for (const edge of Object.values(project.edges)) {
     const sourceNode = dag.nodes[edge.fromNode];
     const targetNode = dag.nodes[edge.toNode];
     if (!sourceNode || !targetNode) continue;
 
-    const sourceFields = getNodeOutputFields(
-      project,
-      edge.fromNode,
-      sourceNode.type
-    );
-    const targetFields = getNodeInputFields(
-      project,
-      edge.toNode,
-      targetNode.type
-    );
+    const sourceFields = getNodeOutputFields(project, edge.fromNode, sourceNode.type);
+    const sourceFixed = hasFixedOutputFields(project, edge.fromNode, sourceNode.type);
+    const sourceTypes = getNodeOutputTypes(project, edge.fromNode, sourceNode.type);
 
-    const sourceTypes = getNodeOutputTypes(
-      project,
-      edge.fromNode,
-      sourceNode.type
-    );
-    const targetTypes = getNodeInputTypes(
-      project,
-      edge.toNode,
-      targetNode.type
-    );
+    const targetPrompt = getDeclaringPrompt(project, edge.toNode, targetNode.type);
+    const targetTypes = getNodeInputTypes(project, edge.toNode, targetNode.type);
 
     for (const mapping of edge.mappings) {
-      // Validate source field
-      const baseField = mapping.sourceExpr.split(".")[0];
-      if (sourceFields.size > 0 && !sourceFields.has(baseField)) {
-        result.warnings.push({
+      const field = resolveSourceField(mapping.sourceExpr, sourceFields);
+
+      if (sourceFixed && !sourceFields.has(field)) {
+        result.errors.push({
           message:
-            `Source field '${mapping.sourceExpr}' may not exist in ` +
-            `'${edge.fromNode}' (${sourceNode.type}) output. ` +
+            `Edge '${edge.id}': source field '${mapping.sourceExpr}' does not ` +
+            `exist in '${edge.fromNode}' (${sourceNode.type}) output. ` +
             `Available fields: ${JSON.stringify([...sourceFields].sort())}`,
           edgeId: edge.id,
           nodeId: edge.fromNode,
         });
       }
 
-      // Validate target field
-      if (targetFields.size > 0 && !targetFields.has(mapping.targetVar)) {
-        result.warnings.push({
+      if (targetPrompt && !(mapping.targetVar in targetPrompt.inputs)) {
+        result.errors.push({
           message:
-            `Target field '${mapping.targetVar}' not expected by ` +
-            `'${edge.toNode}' (${targetNode.type}). ` +
-            `Expected inputs: ${JSON.stringify([...targetFields].sort())}`,
+            `Edge '${edge.id}': target field '${mapping.targetVar}' is not an ` +
+            `input of '${edge.toNode}' (${targetNode.type}). ` +
+            `Declared inputs: ${JSON.stringify(Object.keys(targetPrompt.inputs).sort())}`,
           edgeId: edge.id,
           nodeId: edge.toNode,
         });
       }
 
-      // Type compatibility check
-      const sourceType = sourceTypes[baseField] ?? null;
+      const sourceType = sourceTypes[field] ?? null;
       const targetType = targetTypes[mapping.targetVar] ?? null;
+      for (const [type, name, nodeId] of [
+        [sourceType, field, edge.fromNode],
+        [targetType, mapping.targetVar, edge.toNode],
+      ] as const) {
+        if (type !== null && !KNOWN_TYPES.has(type)) {
+          result.warnings.push({
+            message:
+              `Edge '${edge.id}': type '${type}' of '${name}' in '${nodeId}' ` +
+              `is not checked. Known types: ${[...KNOWN_TYPES].join(", ")}`,
+            edgeId: edge.id,
+            nodeId,
+          });
+        }
+      }
       if (!typesCompatible(sourceType, targetType)) {
-        result.warnings.push({
+        result.errors.push({
           message:
-            `Type mismatch: '${baseField}' (${sourceType}) from ` +
-            `'${edge.fromNode}' may not be compatible with ` +
-            `'${mapping.targetVar}' (${targetType}) in '${edge.toNode}'`,
+            `Edge '${edge.id}': Type mismatch: '${field}' (${sourceType}) from ` +
+            `'${edge.fromNode}' cannot feed '${mapping.targetVar}' ` +
+            `(${targetType}) in '${edge.toNode}'`,
           edgeId: edge.id,
           nodeId: edge.fromNode,
         });
@@ -311,10 +404,51 @@ export function validateEdgeMappings(
     }
   }
 
-  // In strict mode, warnings become errors
-  if (strict && result.warnings.length > 0) {
+  // Required inputs: every prompt/agent input that is required and has no
+  // default must be written by a mapping on some incoming edge.
+  for (const [nodeId, node] of Object.entries(dag.nodes)) {
+    const prompt = getDeclaringPrompt(project, nodeId, node.type);
+    if (!prompt) continue;
+    const mapped = new Set(
+      node.incomingEdges.flatMap((e) => e.mappings.map((m) => m.targetVar))
+    );
+    for (const [name, input] of Object.entries(prompt.inputs)) {
+      if (!input.required || input.default !== undefined) continue;
+      if (mapped.has(name)) continue;
+      result.errors.push({
+        message:
+          `Node '${nodeId}' (${node.type}): required input '${name}' has no ` +
+          `default and no incoming edge maps it`,
+        nodeId,
+      });
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Validate edge mappings against node input/output contracts.
+ *
+ * Kept for the public API; validateProject() in src/validate.ts is the full
+ * check. Contract errors (see checkEdgeContracts) make the result invalid.
+ * In strict mode, warnings are added to the errors as well.
+ */
+export function validateEdgeMappings(
+  project: Project,
+  dag: DAG,
+  strict = false
+): ValidationResult {
+  const { errors, warnings } = checkEdgeContracts(project, dag);
+  const result: ValidationResult = {
+    valid: errors.length === 0,
+    errors: errors.map((e) => e.message),
+    warnings,
+  };
+
+  if (strict && warnings.length > 0) {
     result.valid = false;
-    result.errors = result.warnings.map((w) => w.message);
+    result.errors.push(...warnings.map((w) => w.message));
   }
 
   return result;
@@ -322,163 +456,34 @@ export function validateEdgeMappings(
 
 // ─── Sub-workflow Validation ─────────────────────────────────
 
-/** Recursively validate all sub-workflows referenced by branch and map nodes. */
+/**
+ * Recursively validate all sub-workflows referenced by branch and map nodes.
+ *
+ * Kept for the public API. Each sub-workflow gets the full validateProject()
+ * check from src/validate.ts, with messages prefixed by the referring node.
+ */
 export async function validateSubworkflows(
   project: Project,
   visited?: Set<string>,
   strict = false
 ): Promise<ValidationResult> {
-  // Lazy import to break circular dependency
-  const { loadProject } = await import("./project.js") as {
-    loadProject: (p: string) => Project;
+  // Lazy import: src/validate.ts imports this module.
+  const { collectSubworkflowDiagnostics } = await import("./validate.js");
+  const { errors, warnings } = await collectSubworkflowDiagnostics(
+    project,
+    visited ?? new Set()
+  );
+
+  const result: ValidationResult = {
+    valid: errors.length === 0,
+    errors: errors.map((e) => e.message),
+    warnings,
   };
 
-  const result: ValidationResult = { valid: true, errors: [], warnings: [] };
-
-  if (!visited) visited = new Set();
-
-  const currentPath = project.root;
-  if (visited.has(currentPath)) {
-    result.valid = false;
-    result.errors.push(
-      `Circular workflow reference detected: ${currentPath}`
-    );
-    return result;
-  }
-  visited.add(currentPath);
-
-  // Validate branch sub-workflows
-  for (const [branchId, branch] of Object.entries(project.branches)) {
-    if (branch.workflowPath === "self") continue;
-
-    const resolvedPath = nodePath.resolve(
-      project.root,
-      branch.workflowPath
-    );
-
-    if (
-      !existsSync(resolvedPath)
-    ) {
-      result.valid = false;
-      result.errors.push(
-        `Branch '${branchId}': workflow file not found: ${branch.workflowPath}`
-      );
-      continue;
-    }
-
-    if (visited.has(resolvedPath)) {
-      result.valid = false;
-      result.errors.push(
-        `Branch '${branchId}': circular workflow reference to ${branch.workflowPath}`
-      );
-      continue;
-    }
-
-    try {
-      const subProject = loadProject(resolvedPath);
-      const subDag = buildDag(subProject);
-      const subValidation = validateEdgeMappings(subProject, subDag, strict);
-
-      if (!subValidation.valid) {
-        result.valid = false;
-        for (const error of subValidation.errors) {
-          result.errors.push(
-            `Branch '${branchId}' (${branch.workflowPath}): ${error}`
-          );
-        }
-      }
-      for (const warning of subValidation.warnings) {
-        result.warnings.push({
-          message: `Branch '${branchId}' (${branch.workflowPath}): ${warning.message}`,
-          edgeId: warning.edgeId,
-          nodeId: warning.nodeId,
-        });
-      }
-
-      const subResult = await validateSubworkflows(
-        subProject,
-        new Set(visited),
-        strict
-      );
-      if (!subResult.valid) {
-        result.valid = false;
-        result.errors.push(...subResult.errors);
-      }
-      result.warnings.push(...subResult.warnings);
-    } catch (e) {
-      result.valid = false;
-      result.errors.push(
-        `Branch '${branchId}': failed to load workflow ${branch.workflowPath}: ${e}`
-      );
-    }
-  }
-
-  // Validate map sub-workflows
-  for (const [mapId, mapNode] of Object.entries(project.maps)) {
-    const resolvedPath = nodePath.resolve(
-      project.root,
-      mapNode.workflowPath
-    );
-
-    if (!existsSync(resolvedPath)) {
-      result.valid = false;
-      result.errors.push(
-        `Map '${mapId}': workflow file not found: ${mapNode.workflowPath}`
-      );
-      continue;
-    }
-
-    if (visited.has(resolvedPath)) {
-      result.valid = false;
-      result.errors.push(
-        `Map '${mapId}': circular workflow reference to ${mapNode.workflowPath}`
-      );
-      continue;
-    }
-
-    try {
-      const subProject = loadProject(resolvedPath);
-      const subDag = buildDag(subProject);
-      const subValidation = validateEdgeMappings(subProject, subDag, strict);
-
-      if (!subValidation.valid) {
-        result.valid = false;
-        for (const error of subValidation.errors) {
-          result.errors.push(
-            `Map '${mapId}' (${mapNode.workflowPath}): ${error}`
-          );
-        }
-      }
-      for (const warning of subValidation.warnings) {
-        result.warnings.push({
-          message: `Map '${mapId}' (${mapNode.workflowPath}): ${warning.message}`,
-          edgeId: warning.edgeId,
-          nodeId: warning.nodeId,
-        });
-      }
-
-      const subResult = await validateSubworkflows(
-        subProject,
-        new Set(visited),
-        strict
-      );
-      if (!subResult.valid) {
-        result.valid = false;
-        result.errors.push(...subResult.errors);
-      }
-      result.warnings.push(...subResult.warnings);
-    } catch (e) {
-      result.valid = false;
-      result.errors.push(
-        `Map '${mapId}': failed to load workflow ${mapNode.workflowPath}: ${e}`
-      );
-    }
-  }
-
   // In strict mode, warnings become errors
-  if (strict && result.warnings.length > 0) {
+  if (strict && warnings.length > 0) {
     result.valid = false;
-    for (const w of result.warnings) {
+    for (const w of warnings) {
       if (!result.errors.includes(w.message)) {
         result.errors.push(w.message);
       }

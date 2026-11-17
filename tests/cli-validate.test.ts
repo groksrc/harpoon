@@ -101,6 +101,27 @@ Count to {{n}}.
     );
   });
 
+  it("exits 2 on a misspelled edge endpoint and names the edge", async () => {
+    const dir = writeProject(
+      `harpoon: "1.0"
+name: dangling-edge-repro
+nodes:
+  input:
+    type: input
+  output:
+    type: output
+edges:
+  e1: { from: input, to: outptu }
+`
+    );
+    dirs.push(dir);
+
+    const result = await validate(dir);
+    expect(result.code).toBe(ExitCode.VALIDATION_ERROR);
+    expect(result.stdout).not.toContain("Validation passed");
+    expect(result.stderr).toContain("Edge 'e1' references unknown target node 'outptu'");
+  });
+
   it("reports a cycle as a validation error, not an uncaught exception", async () => {
     const dir = writeProject(
       `harpoon: "1.0"

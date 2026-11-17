@@ -160,6 +160,13 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+/** The JSON type of a value, for schema error messages. */
+function jsonTypeOf(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
 function validateSchema(
   data: Record<string, unknown>,
   schema: Record<string, [string, string]>
@@ -181,7 +188,7 @@ function validateSchema(
     const expected = expectedTypes[fieldType];
     if (expected && typeof value !== expected) {
       throw new SchemaValidationError(
-        `Field '${fieldName}' expected ${fieldType}, got ${typeof value}`
+        `Field '${fieldName}' expected ${fieldType}, got ${jsonTypeOf(value)}`
       );
     }
     if (fieldType === "integer" && !Number.isInteger(value)) {
@@ -191,7 +198,7 @@ function validateSchema(
     }
     if (fieldType === "array" && !Array.isArray(value)) {
       throw new SchemaValidationError(
-        `Field '${fieldName}' expected array, got ${typeof value}`
+        `Field '${fieldName}' expected array, got ${jsonTypeOf(value)}`
       );
     }
     if (
@@ -199,7 +206,7 @@ function validateSchema(
       (typeof value !== "object" || value === null || Array.isArray(value))
     ) {
       throw new SchemaValidationError(
-        `Field '${fieldName}' expected object, got ${typeof value}`
+        `Field '${fieldName}' expected object, got ${jsonTypeOf(value)}`
       );
     }
   }
@@ -250,7 +257,8 @@ function validateRunInputs(
   for (const [nodeId, inputNode] of Object.entries(project.inputNodes)) {
     const provided = Object.fromEntries(
       Object.entries(inputNode.schema).filter(
-        ([name]) => inputs[name] !== undefined && inputs[name] !== null
+        // A supplied null is a value, so it must match the declared type.
+        ([name]) => inputs[name] !== undefined
       )
     );
     try {

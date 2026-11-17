@@ -322,7 +322,9 @@ node that refers to them, such as `Branch 'loop' (./workflows/build.tml): ...`.
 ### Errors
 
 Structure:
-- An edge references a node that does not exist.
+- An edge references a node that does not exist. Every edge endpoint must be
+  declared, so a misspelled node name is an error. Harpoon does not create an
+  input or output node for an undeclared endpoint.
 - The graph has a cycle.
 - A manifest node has a `type` other than `input`, `output`, `prompt`, `tool`,
   `agent`, `branch`, `map` or `trigger`.
@@ -368,8 +370,9 @@ schema) is always compatible.
 ### Checks during a run
 
 - Run inputs are type-checked against each input node's `schema` before any
-  node runs. Only the fields you pass are checked. A missing required field
-  fails at the node that needs it.
+  node runs. Only the fields you pass are checked, and a `null` value counts
+  as passed, so it fails a typed field. A missing required field fails at the
+  node that needs it.
 - Prompt and agent JSON output must contain every field in the prompt's
   `output.schema`, with the declared type. Tool output is checked against the
   tool's `output.schema`. A failed check stops the run before downstream nodes.
@@ -400,6 +403,9 @@ those warnings now fails validation. Common fixes:
 - An unmapped required input: map it on an incoming edge, give it a `default`,
   or mark it `required: false`.
 - A misspelled source or target field: match the names in the schemas.
+- An edge to an undeclared node: declare it under `nodes:`. Version 1.4.1 and
+  earlier silently created an input or output node for any undeclared edge
+  endpoint, which hid misspelled node names.
 
 ### Common Validation Errors
 

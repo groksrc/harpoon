@@ -539,16 +539,32 @@ Map `items` and `count` to downstream nodes via edge mappings.
 
 ### Example: Document Chunking Pipeline
 
+This is `examples/map-demo/agent.tml`. Tools go in the top-level `tools:`
+section, and every edge endpoint is declared.
+
 ```yaml
 nodes:
-  chunk_text:
-    type: tool
+  input:
+    type: input
+    schema:
+      document: { type: string, description: Text document to process }
   process_chunks:
     type: map
     workflow: ./analyze_chunk
     over: chunks
     max_concurrency: 5
+  output:
+    type: output
+tools:
+  chunk_text:
+    type: typescript
+    path: chunk_text.ts
 edges:
+  e0:
+    from: input
+    to: chunk_text
+    mapping:
+      document: document
   e1:
     from: chunk_text
     to: process_chunks
@@ -653,6 +669,7 @@ branch and map nodes are validated too.
 
 **Errors** (validation fails, exit code 2):
 - An edge references a node that does not exist, or the graph has a cycle.
+  Declare every edge endpoint, including `input` and `output`, under `nodes:`.
 - A manifest node's `type` is not `input`, `output`, `prompt`, `tool`, `agent`,
   `branch`, `map` or `trigger`.
 - An agent's prompt file is missing or does not parse.

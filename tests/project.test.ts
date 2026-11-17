@@ -608,6 +608,41 @@ edges:
       );
     });
 
+    it("keeps a misspelled manifest edge endpoint so validation reports it", async () => {
+      tmpdir = makeTmpDir();
+      fs.writeFileSync(
+        path.join(tmpdir, "agent.tml"),
+        `harpoon: "1.0"
+name: test
+nodes:
+  input:
+    type: input
+  output:
+    type: output
+edges:
+  e1: { from: input, to: outptu }
+  e2: { from: inptu, to: output }
+`
+      );
+
+      const project = loadProject(tmpdir);
+      expect(Object.keys(project.inputNodes)).toEqual(["input"]);
+      expect(Object.keys(project.outputNodes)).toEqual(["output"]);
+
+      const result = await validateProject(project);
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContainEqual({
+        message: "Edge 'e1' references unknown target node 'outptu'",
+        edgeId: "e1",
+        nodeId: "outptu",
+      });
+      expect(result.errors).toContainEqual({
+        message: "Edge 'e2' references unknown source node 'inptu'",
+        edgeId: "e2",
+        nodeId: "inptu",
+      });
+    });
+
     it("accepts an explicit 'prompt' type in the manifest", async () => {
       tmpdir = makeTmpDir();
       fs.writeFileSync(

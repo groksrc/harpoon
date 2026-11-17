@@ -867,6 +867,20 @@ describe("run input type check", () => {
     }
   });
 
+  it("rejects a supplied null before any node runs", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harpoon-input-null-"));
+    try {
+      const attempt = run(makeMarkerProject(root), { inputs: { count: null } });
+      await expect(attempt).rejects.toThrow(ValidationError);
+      await expect(attempt).rejects.toThrow(
+        "Run input rejected by input node 'input': Field 'count' expected integer, got null",
+      );
+      expect(fs.existsSync(path.join(root, "ran.txt"))).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not reject a missing input field", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "harpoon-input-missing-"));
     try {

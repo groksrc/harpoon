@@ -1083,40 +1083,9 @@ export function loadProject(projectPath: string): Project {
   // Augment with prompt frontmatter overrides
   augmentFromPrompts(project);
 
-  // Create implicit input/output nodes if referenced but not defined
-  const allFromNodes = new Set<string>();
-  const allToNodes = new Set<string>();
-  for (const edge of Object.values(project.edges)) {
-    allFromNodes.add(edge.fromNode);
-    allToNodes.add(edge.toNode);
-  }
-
-  const knownNodes = new Set([
-    ...Object.keys(project.prompts),
-    ...Object.keys(project.inputNodes),
-    ...Object.keys(project.outputNodes),
-    ...Object.keys(project.tools),
-    ...Object.keys(project.agents),
-    ...Object.keys(project.branches),
-    ...Object.keys(project.maps),
-    ...Object.keys(project.triggers),
-    // A node with an unknown type is declared, so an edge to it must not
-    // turn it into an implicit input or output node.
-    ...Object.keys(project.unknownTypeNodes ?? {}),
-  ]);
-
-  for (const nodeId of allFromNodes) {
-    if (!knownNodes.has(nodeId)) {
-      project.inputNodes[nodeId] = { id: nodeId, schema: {} };
-      knownNodes.add(nodeId);
-    }
-  }
-
-  for (const nodeId of allToNodes) {
-    if (!knownNodes.has(nodeId)) {
-      project.outputNodes[nodeId] = { id: nodeId, format: "json" };
-    }
-  }
+  // Edge endpoints are kept exactly as written. validateProject() reports an
+  // endpoint that names no declared node as an unknown node. Turning it into an
+  // implicit input or output node would hide a misspelled node name.
 
   // Default entrypoint
   if (

@@ -356,7 +356,9 @@ Warnings pass by default and fail under `--strict`:
 - A field declares a type outside the six known types. Harpoon does not check
   it. This covers every declared field (input node schemas, prompt and agent
   inputs and output fields, tool output schemas), whether or not an edge maps
-  it, with one warning per node and field.
+  it, with one warning per node and field. A prompt's or agent's
+  `output.schema` is scanned even when `output.format` is `text`, although a
+  text prompt or agent still outputs only `text` at runtime.
 
 ### Type compatibility
 

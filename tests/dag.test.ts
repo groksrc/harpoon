@@ -1306,6 +1306,40 @@ edges:
       expect((await validateProject(project, { strict: true })).valid).toBe(false);
     });
 
+    it("warns about an unchecked type in a text prompt's output schema", async () => {
+      // The parser keeps output.schema fields whatever the format, so a text
+      // prompt can declare one. Its runtime output is still only `text`.
+      const project = makeContractProject({ text: "string" });
+      project.prompts.p = makePrompt("p", { text: { type: "string" } });
+      project.prompts.p.output = {
+        format: "text",
+        fields: { ignored: ["uuid", ""], text: ["money", ""], plain: ["string", ""] },
+      };
+      project.edges.e1 = edge("e1", "input", "p", { text: "text" });
+      project.edges.e2 = edge("e2", "p", "output", { text: "text" });
+      const result = await validateProject(project);
+      expect(result.errors).toEqual([]);
+      expect(result.warnings.map((w) => [w.nodeId, w.message.split(". Known")[0]])).toEqual([
+        ["p", "Node 'p' (prompt): type 'uuid' of output field 'ignored' is not checked"],
+        ["p", "Node 'p' (prompt): type 'money' of output field 'text' is not checked"],
+      ]);
+      expect(result.valid).toBe(true);
+      expect((await validateProject(project, { strict: true })).valid).toBe(false);
+    });
+
+    it("warns about an unchecked type in a text agent's output schema", async () => {
+      const writer = makePrompt("writer", { topic: { type: "string" } });
+      writer.output = { format: "text", fields: { ignored: ["uuid", ""] } };
+      const project = makeAgentReviewProject(writer, "text");
+      const result = await validateProject(project);
+      expect(result.errors).toEqual([]);
+      expect(result.warnings.map((w) => [w.nodeId, w.message.split(". Known")[0]])).toEqual([
+        ["writer", "Node 'writer' (agent): type 'uuid' of output field 'ignored' is not checked"],
+      ]);
+      expect(result.valid).toBe(true);
+      expect((await validateProject(project, { strict: true })).valid).toBe(false);
+    });
+
     it("accepts a declared field from a JSON agent", async () => {
       const writer = makePrompt("writer", { topic: { type: "string" } }, { summary: "string" });
       const result = await validateProject(makeAgentReviewProject(writer, "summary"), { strict: true });

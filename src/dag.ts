@@ -474,12 +474,27 @@ export function checkDeclaredTypes(
   const known = [...KNOWN_TYPES].join(", ");
 
   for (const [nodeId, node] of Object.entries(dag.nodes)) {
-    for (const [direction, types] of [
-      ["input", getNodeInputTypes(project, nodeId, node.type)],
-      ["output", getNodeOutputTypes(project, nodeId, node.type)],
+    // A prompt or agent may declare output.schema fields even with
+    // output.format "text". The parser keeps them, but the runtime output
+    // shape (and so getNodeOutputTypes) omits them. Scan the declarations
+    // too, so every declared type is reported.
+    const prompt = getDeclaringPrompt(project, nodeId, node.type);
+    const declaredOutputs: [string, string | null][] = prompt
+      ? Object.entries(prompt.output.fields).map(([name, [ftype]]) => [name, ftype])
+      : [];
+    const seen = new Set<string>();
+    for (const [direction, entries] of [
+      ["input", Object.entries(getNodeInputTypes(project, nodeId, node.type))],
+      [
+        "output",
+        [...Object.entries(getNodeOutputTypes(project, nodeId, node.type)), ...declaredOutputs],
+      ],
     ] as const) {
-      for (const [name, type] of Object.entries(types)) {
+      for (const [name, type] of entries) {
         if (type === null || KNOWN_TYPES.has(type)) continue;
+        const key = `${direction}\0${name}\0${type}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
         warnings.push({
           message:
             `Node '${nodeId}' (${node.type}): type '${type}' of ${direction} ` +

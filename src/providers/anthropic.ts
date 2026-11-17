@@ -32,6 +32,7 @@ export class AnthropicProvider implements Provider {
       const typeMap: Record<string, string> = {
         string: 'string',
         number: 'number',
+        integer: 'integer',
         boolean: 'boolean',
         array: 'array',
         object: 'object',

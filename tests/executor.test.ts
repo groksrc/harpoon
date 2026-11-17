@@ -1002,4 +1002,28 @@ describe("agent output check", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("rejects mapping `text` from a JSON agent before the agent runs", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "harpoon-agent-text-"));
+    try {
+      vi.mocked(executeAgentViaCli).mockClear();
+      const project = makeAgentProject(root);
+      // summarize is a JSON agent declaring only `summary`. At runtime it
+      // returns only its parsed JSON, so `text` would never arrive.
+      project.edges.e2 = {
+        id: "e2",
+        fromNode: "summarize",
+        toNode: "output",
+        mappings: [{ targetVar: "draft", sourceExpr: "text" }],
+      };
+      const attempt = run(project, {});
+      await expect(attempt).rejects.toThrow(ValidationError);
+      await expect(attempt).rejects.toThrow(
+        /Edge 'e2': source field 'text' does not exist in 'summarize' \(agent\) output/,
+      );
+      expect(executeAgentViaCli).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

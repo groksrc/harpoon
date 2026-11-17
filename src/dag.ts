@@ -79,6 +79,23 @@ function getPromptForAgent(
   return project.prompts[promptId];
 }
 
+/**
+ * A JSON prompt or agent that declares no output fields returns whatever
+ * JSON the model produces, so its field list is not known statically.
+ */
+function hasUndeclaredJsonOutput(prompt: PromptNode): boolean {
+  return (
+    prompt.output.format === "json" &&
+    Object.keys(prompt.output.fields).length === 0
+  );
+}
+
+// The output shapes below mirror the runtime:
+// - A prompt node always outputs `text` (the raw response), plus its parsed
+//   JSON fields when it is a JSON prompt (executePromptNodeAsync()).
+// - An agent node outputs `text` only when it is a text agent. A JSON agent
+//   outputs only its parsed JSON (parseCLIOutput() in src/cli-agents.ts).
+
 function getPromptOutputFields(prompt: PromptNode | undefined): Set<string> {
   if (prompt && hasStructuredOutput(prompt)) {
     return new Set(["text", ...Object.keys(prompt.output.fields)]);
@@ -98,6 +115,27 @@ function getPromptOutputTypes(
   return types;
 }
 
+function getAgentOutputFields(prompt: PromptNode | undefined): Set<string> {
+  if (prompt && prompt.output.format === "json") {
+    return new Set(Object.keys(prompt.output.fields));
+  }
+  return new Set(["text"]);
+}
+
+function getAgentOutputTypes(
+  prompt: PromptNode | undefined
+): Record<string, string | null> {
+  if (prompt && prompt.output.format === "json") {
+    return Object.fromEntries(
+      Object.entries(prompt.output.fields).map(([name, [ftype]]) => [
+        name,
+        ftype,
+      ])
+    );
+  }
+  return { text: "string" };
+}
+
 // ─── Node Output/Input Field Accessors ───────────────────────
 
 /** Get the fields a node outputs for edge mapping validation. */
@@ -114,7 +152,7 @@ export function getNodeOutputFields(
     return getPromptOutputFields(project.prompts[nodeId]);
   }
   if (nodeType === "agent") {
-    return getPromptOutputFields(getPromptForAgent(project, nodeId));
+    return getAgentOutputFields(getPromptForAgent(project, nodeId));
   }
   if (nodeType === "tool") {
     const schema = project.tools[nodeId]?.outputSchema;
@@ -179,7 +217,7 @@ export function getNodeOutputTypes(
     return getPromptOutputTypes(project.prompts[nodeId]);
   }
   if (nodeType === "agent") {
-    return getPromptOutputTypes(getPromptForAgent(project, nodeId));
+    return getAgentOutputTypes(getPromptForAgent(project, nodeId));
   }
   if (nodeType === "tool") {
     const schema = project.tools[nodeId]?.outputSchema;
@@ -271,17 +309,23 @@ export function typesCompatible(
 
 /**
  * Whether a node's output field list is fixed, so a mapping that reads a
- * field outside it is an error. Prompt and agent nodes always have a fixed
- * list; input nodes only when they declare a schema; tools only with an
- * output schema. Branch, map and trigger outputs depend on a sub-workflow.
+ * field outside it is an error. Prompt and agent nodes have a fixed list
+ * unless they are JSON with no declared output fields; input nodes only when
+ * they declare a schema; tools only with an output schema. Branch, map and
+ * trigger outputs depend on a sub-workflow.
  */
 function hasFixedOutputFields(
   project: Project,
   nodeId: string,
   nodeType: string
 ): boolean {
-  if (nodeType === "prompt") return project.prompts[nodeId] !== undefined;
-  if (nodeType === "agent") return getPromptForAgent(project, nodeId) !== undefined;
+  if (nodeType === "prompt" || nodeType === "agent") {
+    const prompt =
+      nodeType === "prompt"
+        ? project.prompts[nodeId]
+        : getPromptForAgent(project, nodeId);
+    return prompt !== undefined && !hasUndeclaredJsonOutput(prompt);
+  }
   if (nodeType === "input") {
     const node = project.inputNodes[nodeId];
     return node !== undefined && Object.keys(node.schema).length > 0;

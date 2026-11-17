@@ -1545,8 +1545,9 @@ export async function run(
   }
 
   // Type-check run inputs against each input node's schema before any node
-  // runs. Only fields present (and not null) are checked: input schemas have
-  // no `required` flag, and a missing required field is caught by
+  // runs. Every field present in `inputs` is checked, including a `null`
+  // value. A missing field is not rejected here: input schemas have no
+  // `required` flag, and a missing required field is caught by
   // validateRequiredInputs() at the node that consumes it.
   if (inputs) {
     validateRunInputs(project, inputs);

@@ -335,8 +335,11 @@ Structure:
 Edge contracts, checked for every edge mapping (`target: source`):
 - The source field is not an output of the source node. Only nodes with a fixed
   field list are checked: input nodes with a `schema`, prompts, agents, and
-  tools with an `output.schema`. Branch, map and trigger outputs, tools without
-  a schema, and input nodes without a schema are dynamic and not checked.
+  tools with an `output.schema`. A prompt outputs `text` plus its declared JSON
+  fields. A JSON agent outputs only its declared fields, and a text agent
+  outputs only `text`. Branch, map and trigger outputs, tools without a schema,
+  input nodes without a schema, and JSON prompts or agents that declare no
+  output fields are dynamic and not checked.
 - The target field is not a declared input of a prompt or agent target. Output,
   branch, map, trigger and tool targets accept any field.
 - The source and target types are both known and incompatible (see the table).

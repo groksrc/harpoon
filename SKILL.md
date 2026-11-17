@@ -417,7 +417,7 @@ output:
 
 This is converted to a Claude tool definition and forced via `tool_choice`. Much more reliable than asking for JSON in the prompt.
 
-**Supported types:** `string`, `number`, `boolean`, `array`, `object`
+**Supported types:** `string`, `number`, `integer`, `boolean`, `array`, `object`
 
 ## Agent Nodes (Preferred)
 
@@ -677,8 +677,10 @@ branch and map nodes are validated too.
 - A branch or map sub-workflow is missing, circular or invalid.
 - A mapping reads a field the source does not output. This is checked for
   input nodes with a `schema`, prompts, agents, and tools with an
-  `output.schema`. Branch, map and trigger outputs, and tools without a schema,
-  are not checked.
+  `output.schema`. A prompt outputs `text` plus its declared JSON fields. A
+  JSON agent outputs only its declared fields (no `text`), and a text agent
+  outputs only `text`. Branch, map and trigger outputs, tools without a schema,
+  and JSON prompts or agents with no declared output fields are not checked.
 - A mapping writes a field that a prompt or agent target does not declare
   under `input:`.
 - The source and target field types are both known and incompatible.

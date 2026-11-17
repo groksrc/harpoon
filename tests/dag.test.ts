@@ -15,7 +15,7 @@ import {
   validateEdgeMappings,
 } from "../src/dag.js";
 import type { Project, Edge, EdgeMapping, InputNode, OutputNode } from "../src/project.js";
-import type { PromptNode, InputField, BranchNode } from "../src/parser.js";
+import type { PromptNode, InputField, BranchNode, AgentNode } from "../src/parser.js";
 import { DAGError } from "../src/errors.js";
 import { validateProject } from "../src/validate.js";
 import { loadProject } from "../src/project.js";
@@ -1191,6 +1191,110 @@ edges:
       const result = await validateProject(project, { strict: true });
       expect(result.errors).toEqual([]);
       expect(result.valid).toBe(true);
+    });
+  });
+
+  describe("agent and undeclared JSON outputs", () => {
+    function makeAgent(id: string, promptNode: PromptNode): AgentNode {
+      return {
+        id,
+        promptPath: `prompts/${id}.prompt`,
+        model: null,
+        allowedTools: [],
+        mcpServers: {},
+        maxTurns: 1,
+        permissionMode: null,
+        effort: null,
+        cwd: null,
+        executionMode: "cli",
+        timeout: null,
+        promptNode,
+      };
+    }
+
+    /** input -> writer (agent) -> review (prompt needing `draft`) -> output */
+    function makeAgentReviewProject(
+      writerPrompt: PromptNode,
+      draftSource: string
+    ): Project {
+      const project = makeContractProject({ topic: "string" });
+      project.agents.writer = makeAgent("writer", writerPrompt);
+      project.prompts.review = makePrompt("review", { draft: { type: "string" } });
+      project.edges.e1 = edge("e1", "input", "writer", { topic: "topic" });
+      project.edges.e2 = edge("e2", "writer", "review", { draft: draftSource });
+      project.edges.e3 = edge("e3", "review", "output", { text: "text" });
+      return project;
+    }
+
+    it("rejects `text` from a JSON agent, which outputs only its declared fields", async () => {
+      const writer = makePrompt("writer", { topic: { type: "string" } }, { summary: "string" });
+      const project = makeAgentReviewProject(writer, "text");
+      const result = await validateProject(project, { strict: true });
+      expect(result.valid).toBe(false);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toMatchObject({ edgeId: "e2", nodeId: "writer" });
+      expect(result.errors[0].message).toContain(
+        `source field 'text' does not exist in 'writer' (agent) output. Available fields: ["summary"]`
+      );
+    });
+
+    it("accepts a declared field from a JSON agent", async () => {
+      const writer = makePrompt("writer", { topic: { type: "string" } }, { summary: "string" });
+      const result = await validateProject(makeAgentReviewProject(writer, "summary"), { strict: true });
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+
+    it("accepts `text` from a text agent and rejects any other field", async () => {
+      const writer = makePrompt("writer", { topic: { type: "string" } });
+      expect(writer.output.format).toBe("text");
+      expect((await validateProject(makeAgentReviewProject(writer, "text"), { strict: true })).valid).toBe(true);
+      const bad = await validateProject(makeAgentReviewProject(writer, "summary"));
+      expect(bad.valid).toBe(false);
+      expect(bad.errors[0].message).toContain(`Available fields: ["text"]`);
+    });
+
+    it("still offers `text` from a JSON prompt, which returns the raw response too", async () => {
+      const project = makeContractProject({ topic: "string" });
+      project.prompts.writer = makePrompt("writer", { topic: { type: "string" } }, { summary: "string" });
+      project.prompts.review = makePrompt("review", { draft: { type: "string" } });
+      project.edges.e1 = edge("e1", "input", "writer", { topic: "topic" });
+      project.edges.e2 = edge("e2", "writer", "review", { draft: "text" });
+      project.edges.e3 = edge("e3", "review", "output", { text: "text" });
+      const result = await validateProject(project, { strict: true });
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+
+    it("does not check fields from a JSON agent or prompt that declares no output fields", async () => {
+      const writer = makePrompt("writer", { topic: { type: "string" } });
+      writer.output.format = "json";
+      const agentResult = await validateProject(makeAgentReviewProject(writer, "anything"), { strict: true });
+      expect(agentResult.errors).toEqual([]);
+      expect(agentResult.valid).toBe(true);
+
+      const project = makeContractProject({ topic: "string" });
+      project.prompts.writer = writer;
+      project.prompts.review = makePrompt("review", { draft: { type: "string" } });
+      project.edges.e1 = edge("e1", "input", "writer", { topic: "topic" });
+      project.edges.e2 = edge("e2", "writer", "review", { draft: "anything" });
+      project.edges.e3 = edge("e3", "review", "output", { text: "text" });
+      const promptResult = await validateProject(project, { strict: true });
+      expect(promptResult.errors).toEqual([]);
+      expect(promptResult.valid).toBe(true);
+    });
+
+    it("reports JSON agent field types without a `text` entry", () => {
+      const project = makeContractProject();
+      project.agents.writer = makeAgent(
+        "writer",
+        makePrompt("writer", {}, { summary: "string", count: "integer" })
+      );
+      expect(getNodeOutputFields(project, "writer", "agent")).toEqual(new Set(["summary", "count"]));
+      expect(getNodeOutputTypes(project, "writer", "agent")).toEqual({
+        summary: "string",
+        count: "integer",
+      });
     });
   });
 

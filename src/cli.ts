@@ -15,11 +15,10 @@ import { ExitCode, HarpoonError } from "./errors.js";
 import { loadProject } from "./project.js";
 import {
   buildDag,
-  validateEdgeMappings,
-  validateSubworkflows,
   visualizeDag,
   visualizeDagMermaid,
 } from "./dag.js";
+import { cmdProjectValidate } from "./cli-validate.js";
 import { run } from "./executor.js";
 import type { ExecutionResult } from "./executor.js";
 import {
@@ -254,61 +253,6 @@ export function process(text: string): Record<string, number> {
   process.stdout.write("  harpoon project run --dry-run\n");
 
   return ExitCode.SUCCESS;
-}
-
-async function cmdProjectValidate(projectPath: string, options: { strict: boolean }): Promise<number> {
-  const project = loadProject(projectPath);
-  const dag = buildDag(project);
-
-  // Validate edge mappings
-  const validation = validateEdgeMappings(project, dag, options.strict);
-
-  // Validate sub-workflows (recursive)
-  const subworkflowValidation = await validateSubworkflows(project, undefined, options.strict);
-
-  // Merge results
-  const allWarnings = [...validation.warnings, ...subworkflowValidation.warnings];
-  const allErrors = [...validation.errors, ...subworkflowValidation.errors];
-  const allValid = validation.valid && subworkflowValidation.valid;
-
-  process.stdout.write(`Project: ${project.name}\n`);
-  process.stdout.write(`  Prompts: ${Object.keys(project.prompts).length}\n`);
-  process.stdout.write(`  Tools: ${Object.keys(project.tools).length}\n`);
-  process.stdout.write(`  Agents: ${Object.keys(project.agents).length}\n`);
-  process.stdout.write(`  Branches: ${Object.keys(project.branches).length}\n`);
-  process.stdout.write(`  Maps: ${Object.keys(project.maps).length}\n`);
-  process.stdout.write(`  Edges: ${Object.keys(project.edges).length}\n`);
-  process.stdout.write(`  Nodes in execution order: ${dag.executionOrder.length}\n`);
-  process.stdout.write("\n");
-
-  // Show warnings
-  if (allWarnings.length > 0) {
-    process.stdout.write("Warnings:\n");
-    for (const warning of allWarnings) {
-      const edgeInfo = warning.edgeId ? ` (edge: ${warning.edgeId})` : "";
-      process.stdout.write(`  ! ${warning.message}${edgeInfo}\n`);
-    }
-    process.stdout.write("\n");
-  }
-
-  // In strict mode, warnings are errors
-  if (options.strict && allWarnings.length > 0) {
-    process.stderr.write(
-      `FAILED: ${allWarnings.length} warning(s) in strict mode\n`,
-    );
-    return ExitCode.VALIDATION_ERROR;
-  }
-
-  if (allValid) {
-    process.stdout.write("Validation passed\n");
-    return ExitCode.SUCCESS;
-  } else {
-    process.stderr.write(`Validation failed: ${allErrors.length} error(s)\n`);
-    for (const error of allErrors) {
-      process.stderr.write(`  x ${error}\n`);
-    }
-    return ExitCode.VALIDATION_ERROR;
-  }
 }
 
 function cmdProjectGraph(

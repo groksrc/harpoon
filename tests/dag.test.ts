@@ -15,8 +15,13 @@ import {
   validateEdgeMappings,
 } from "../src/dag.js";
 import type { Project, Edge, EdgeMapping, InputNode, OutputNode } from "../src/project.js";
-import type { PromptNode, InputField, BranchNode } from "../src/parser.js";
+import type { PromptNode, InputField, BranchNode, AgentNode } from "../src/parser.js";
 import { DAGError } from "../src/errors.js";
+import { validateProject } from "../src/validate.js";
+import { loadProject } from "../src/project.js";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
 
 /** Create a minimal Project for testing. */
 function makeProject(
@@ -340,9 +345,30 @@ describe("typesCompatible", () => {
     expect(typesCompatible(null, null)).toBe(true);
   });
 
-  it("integer and number are compatible both ways", () => {
+  it("integer to number is compatible", () => {
     expect(typesCompatible("integer", "number")).toBe(true);
-    expect(typesCompatible("number", "integer")).toBe(true);
+  });
+
+  it("number to integer is not compatible", () => {
+    // validateSchema() rejects a non-integer at runtime, so the static check
+    // must reject the mapping too.
+    expect(typesCompatible("number", "integer")).toBe(false);
+  });
+
+  it("every other pair of different known types is incompatible", () => {
+    const known = ["string", "number", "integer", "boolean", "array", "object"];
+    const allowed = new Set(["integer:number", "object:string", "array:string"]);
+    for (const source of known) {
+      for (const target of known) {
+        const expected = source === target || allowed.has(`${source}:${target}`);
+        expect(typesCompatible(source, target), `${source} -> ${target}`).toBe(expected);
+      }
+    }
+  });
+
+  it("types outside the known set are not checked", () => {
+    expect(typesCompatible("date", "string")).toBe(true);
+    expect(typesCompatible("number", "uuid")).toBe(true);
   });
 
   it("object to string is compatible", () => {
@@ -502,7 +528,7 @@ describe("getNodeOutputTypes", () => {
   it("map output types", () => {
     const project = makeProject([], []);
     const types = getNodeOutputTypes(project, "m1", "map");
-    expect(types).toEqual({ items: "array", count: "number" });
+    expect(types).toEqual({ items: "array", count: "integer" });
   });
 });
 
@@ -629,17 +655,17 @@ describe("validateEdgeMappings", () => {
     expect(typeWarnings).toHaveLength(0);
   });
 
-  it("incompatible types produce a warning", () => {
+  it("incompatible types produce an error", () => {
     const project = makeProjectWithEdge("string", "number");
     const dag = buildDag(project);
     const result = validateEdgeMappings(project, dag);
 
-    const typeWarnings = result.warnings.filter((w) =>
-      w.message.includes("Type mismatch")
-    );
-    expect(typeWarnings).toHaveLength(1);
-    expect(typeWarnings[0].message).toContain("string");
-    expect(typeWarnings[0].message).toContain("number");
+    expect(result.valid).toBe(false);
+    const typeErrors = result.errors.filter((e) => e.includes("Type mismatch"));
+    expect(typeErrors).toHaveLength(1);
+    expect(typeErrors[0]).toContain("'e1'");
+    expect(typeErrors[0]).toContain("string");
+    expect(typeErrors[0]).toContain("number");
   });
 
   it("strict mode turns warnings into errors", () => {
@@ -722,5 +748,696 @@ describe("validateEdgeMappings", () => {
 
     const result = validateEdgeMappings(project, buildDag(project));
     expect(result.warnings).toEqual([]);
+  });
+});
+
+// ─── validateProject ─────────────────────────────────────────
+
+/** A prompt node with the given inputs and output schema. */
+function makePrompt(
+  id: string,
+  inputs: Record<string, Partial<InputField> & { type: string }> = {},
+  outputFields: Record<string, string> = {}
+): PromptNode {
+  const promptInputs: Record<string, InputField> = {};
+  for (const [name, spec] of Object.entries(inputs)) {
+    promptInputs[name] = {
+      name,
+      description: "",
+      required: true,
+      ...spec,
+    };
+  }
+  const fields: Record<string, [string, string]> = {};
+  for (const [name, type] of Object.entries(outputFields)) {
+    fields[name] = [type, ""];
+  }
+  return {
+    id,
+    harpoonVersion: "1.0",
+    name: id,
+    description: "",
+    model: null,
+    temperature: null,
+    maxTokens: null,
+    timeout: null,
+    inputs: promptInputs,
+    output: {
+      format: Object.keys(fields).length > 0 ? "json" : "text",
+      fields,
+    },
+    body: "",
+    filePath: null,
+    maxTurns: null,
+    allowedTools: null,
+    permissionMode: null,
+    effort: null,
+    entrypoint: false,
+    next: null,
+    loop: null,
+    tools: null,
+  };
+}
+
+function edge(
+  id: string,
+  fromNode: string,
+  toNode: string,
+  mapping: Record<string, string> = {},
+  condition?: string
+): Edge {
+  return {
+    id,
+    fromNode,
+    toNode,
+    mappings: Object.entries(mapping).map(([targetVar, sourceExpr]) => ({
+      targetVar,
+      sourceExpr,
+    })),
+    condition: condition ?? null,
+  };
+}
+
+/** An empty project with an input node "input" and an output node "output". */
+function makeContractProject(
+  inputSchema: Record<string, string> = {}
+): Project {
+  const project = makeProject([], []);
+  project.inputNodes.input = {
+    id: "input",
+    schema: Object.fromEntries(
+      Object.entries(inputSchema).map(([name, type]) => [name, [type, ""]])
+    ),
+  };
+  project.outputNodes.output = { id: "output", format: "json" };
+  project.entrypoints = ["input"];
+  return project;
+}
+
+/**
+ * A diamond with fan-in: input feeds left and right, both feed join, and
+ * join feeds output. join needs one input from each parent.
+ */
+function makeDiamondProject(): Project {
+  const project = makeContractProject({ text: "string" });
+  project.prompts.left = makePrompt("left", { text: { type: "string" } }, { a: "string" });
+  project.prompts.right = makePrompt("right", { text: { type: "string" } }, { b: "integer" });
+  project.prompts.join = makePrompt(
+    "join",
+    { a: { type: "string" }, b: { type: "number" } },
+    { result: "string" }
+  );
+  for (const e of [
+    edge("in_left", "input", "left", { text: "text" }),
+    edge("in_right", "input", "right", { text: "text" }),
+    edge("left_join", "left", "join", { a: "a" }),
+    edge("right_join", "right", "join", { b: "b" }),
+    edge("join_out", "join", "output", { result: "result" }),
+  ]) {
+    project.edges[e.id] = e;
+  }
+  return project;
+}
+
+const EXAMPLES_DIR = path.resolve(__dirname, "..", "examples");
+
+describe("validateProject", () => {
+  describe("valid workflows", () => {
+    const examples = fs
+      .readdirSync(EXAMPLES_DIR)
+      .filter((name) => fs.statSync(path.join(EXAMPLES_DIR, name)).isDirectory());
+
+    it("finds the examples", () => {
+      expect(examples.length).toBeGreaterThanOrEqual(7);
+    });
+
+    for (const name of examples) {
+      it(`accepts examples/${name} in strict mode`, async () => {
+        const project = loadProject(path.join(EXAMPLES_DIR, name));
+        const result = await validateProject(project, { strict: true });
+        expect(result.errors).toEqual([]);
+        expect(result.warnings).toEqual([]);
+        expect(result.valid).toBe(true);
+      });
+    }
+
+    it("accepts a diamond with fan-in and several parents", async () => {
+      const result = await validateProject(makeDiamondProject(), { strict: true });
+      expect(result.errors).toEqual([]);
+      expect(result.warnings).toEqual([]);
+      expect(result.valid).toBe(true);
+      expect(result.dag?.executionLevels).toEqual([
+        ["input"],
+        ["left", "right"],
+        ["join"],
+        ["output"],
+      ]);
+    });
+
+    it("accepts several input nodes feeding one node", async () => {
+      const project = makeContractProject({ a: "string" });
+      project.inputNodes.second = { id: "second", schema: { b: ["string", ""] } };
+      project.prompts.p = makePrompt("p", { a: { type: "string" }, b: { type: "string" } });
+      project.edges.e1 = edge("e1", "input", "p", { a: "a" });
+      project.edges.e2 = edge("e2", "second", "p", { b: "b" });
+      project.edges.e3 = edge("e3", "p", "output", { text: "text" });
+      const result = await validateProject(project, { strict: true });
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+
+    it("does not check dynamic sources: tools without a schema, branch, trigger and empty input schemas", async () => {
+      const project = makeContractProject();
+      project.tools.fetch = { id: "fetch", type: "typescript", module: "fetch", description: "" };
+      project.branches.loop = {
+        id: "loop",
+        workflowPath: "self",
+        condition: null,
+        loopWhile: null,
+        maxIterations: 1,
+      };
+      project.prompts.p = makePrompt("p", {
+        a: { type: "string" },
+        b: { type: "string" },
+        c: { type: "string" },
+      });
+      project.edges.e1 = edge("e1", "input", "fetch", { anything: "whatever" });
+      project.edges.e2 = edge("e2", "fetch", "loop", { x: "unknown_field" });
+      project.edges.e3 = edge("e3", "loop", "p", { a: "is_complete", b: "output.text" });
+      project.edges.e4 = edge("e4", "fetch", "p", { c: "data.nested" });
+      project.edges.e5 = edge("e5", "p", "output", { text: "text" });
+      const result = await validateProject(project);
+      expect(result.errors).toEqual([]);
+    });
+
+    it("resolves an 'output.' prefix the way the executor does", async () => {
+      const project = makeContractProject({ text: "string" });
+      project.prompts.a = makePrompt("a", { text: { type: "string" } }, { summary: "string" });
+      project.prompts.b = makePrompt("b", { summary: { type: "string" } });
+      project.edges.e1 = edge("e1", "input", "a", { text: "text" });
+      project.edges.e2 = edge("e2", "a", "b", { summary: "output.summary" });
+      project.edges.e3 = edge("e3", "b", "output", { text: "text" });
+      const result = await validateProject(project);
+      expect(result.errors).toEqual([]);
+    });
+  });
+
+  describe("structural errors", () => {
+    it("reports an edge to an unknown node, naming the edge and node", async () => {
+      const project = makeContractProject();
+      project.edges.e1 = edge("e1", "input", "output");
+      project.edges.to_ghost = edge("to_ghost", "input", "ghost");
+      const result = await validateProject(project);
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContainEqual({
+        message: "Edge 'to_ghost' references unknown target node 'ghost'",
+        edgeId: "to_ghost",
+        nodeId: "ghost",
+      });
+    });
+
+    it("reports an edge from an unknown node", async () => {
+      const project = makeContractProject();
+      project.edges.from_ghost = edge("from_ghost", "ghost", "output");
+      const result = await validateProject(project);
+      expect(result.valid).toBe(false);
+      expect(result.errors.map((e) => e.message)).toContain(
+        "Edge 'from_ghost' references unknown source node 'ghost'"
+      );
+    });
+
+    it("reports a cycle as an error naming its nodes, without throwing", async () => {
+      const project = makeContractProject();
+      project.prompts.a = makePrompt("a");
+      project.prompts.b = makePrompt("b");
+      project.edges.e0 = edge("e0", "input", "a");
+      project.edges.e1 = edge("e1", "a", "b");
+      project.edges.e2 = edge("e2", "b", "a");
+      const result = await validateProject(project);
+      expect(result.valid).toBe(false);
+      expect(result.dag).toBeUndefined();
+      const cycle = result.errors.find((e) => e.message.includes("Cycle detected"));
+      expect(cycle?.message).toContain('"a"');
+      expect(cycle?.message).toContain('"b"');
+    });
+
+    it("reports a declared entrypoint that is not a node", async () => {
+      const project = makeContractProject();
+      project.edges.e1 = edge("e1", "input", "output");
+      project.entrypoints = ["input", "start_here"];
+      const result = await validateProject(project);
+      expect(result.valid).toBe(false);
+      const error = result.errors.find((e) => e.nodeId === "start_here");
+      expect(error?.message).toContain("Entrypoint 'start_here' is not a node");
+    });
+
+    it("reports a requested entrypoint that is not a node", async () => {
+      const project = makeContractProject();
+      project.edges.e1 = edge("e1", "input", "output");
+      const result = await validateProject(project, { entrypoint: "nope" });
+      expect(result.valid).toBe(false);
+      expect(result.errors[0].message).toContain(
+        "Requested entrypoint 'nope' is not a node"
+      );
+
+      const ok = await validateProject(project, { entrypoint: "input" });
+      expect(ok.valid).toBe(true);
+    });
+
+    it("reports a node with an unknown type", async () => {
+      const project = makeContractProject();
+      project.edges.e1 = edge("e1", "input", "output");
+      project.unknownTypeNodes = { summarizer: "promt" };
+      const result = await validateProject(project);
+      expect(result.valid).toBe(false);
+      expect(result.errors[0]).toMatchObject({ nodeId: "summarizer" });
+      expect(result.errors[0].message).toContain(
+        "Node 'summarizer' has unknown type 'promt'"
+      );
+    });
+
+    it("keeps reporting missing sub-workflows", async () => {
+      const project = makeContractProject();
+      project.maps.fan = {
+        id: "fan",
+        workflowPath: "./does-not-exist",
+        over: "items",
+        maxConcurrency: 0,
+        onError: "fail",
+        itemCondition: null,
+      };
+      project.edges.e1 = edge("e1", "input", "fan");
+      project.edges.e2 = edge("e2", "fan", "output");
+      const result = await validateProject(project);
+      expect(result.valid).toBe(false);
+      expect(result.errors.map((e) => e.message)).toContain(
+        "Map 'fan': workflow file not found: ./does-not-exist"
+      );
+    });
+
+    it("reports contract errors inside a sub-workflow with the referring node", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "harpoon-subwf-"));
+      try {
+        fs.mkdirSync(path.join(root, "child"));
+        fs.writeFileSync(
+          path.join(root, "child", "agent.tml"),
+          `harpoon: "1.0"
+name: child
+nodes:
+  input:
+    type: input
+    schema:
+      n: { type: number, description: N }
+  output:
+    type: output
+tools:
+  t:
+    type: typescript
+    module: t
+    output:
+      schema:
+        out: { type: string, description: Out }
+edges:
+  e1: { from: input, to: t, mapping: { n: n } }
+  bad: { from: t, to: output, mapping: { x: missing } }
+`
+        );
+        const project = makeContractProject();
+        project.root = root;
+        project.branches.sub = {
+          id: "sub",
+          workflowPath: "./child",
+          condition: null,
+          loopWhile: null,
+          maxIterations: 1,
+        };
+        project.edges.e1 = edge("e1", "input", "sub");
+        project.edges.e2 = edge("e2", "sub", "output");
+        const result = await validateProject(project);
+        expect(result.valid).toBe(false);
+        expect(result.errors[0].message).toMatch(
+          /^Branch 'sub' \(\.\/child\): Edge 'bad': source field 'missing' does not exist in 't'/
+        );
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("contract errors", () => {
+    it("reports a source field the source does not output", async () => {
+      const project = makeContractProject({ text: "string" });
+      project.prompts.p = makePrompt("p", { text: { type: "string" } });
+      project.edges.e1 = edge("e1", "input", "p", { text: "txt" });
+      project.edges.e2 = edge("e2", "p", "output", { text: "text" });
+      const result = await validateProject(project);
+      expect(result.valid).toBe(false);
+      expect(result.errors.map((e) => e.edgeId)).toContain("e1");
+      expect(result.errors[0].message).toContain("source field 'txt' does not exist in 'input'");
+    });
+
+    it("reports a target field the prompt does not declare", async () => {
+      const project = makeContractProject({ text: "string" });
+      project.prompts.p = makePrompt("p", { text: { type: "string" } });
+      project.edges.e1 = edge("e1", "input", "p", { text: "text", extra: "text" });
+      project.edges.e2 = edge("e2", "p", "output", { anything: "text" });
+      const result = await validateProject(project);
+      expect(result.valid).toBe(false);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toMatchObject({ edgeId: "e1", nodeId: "p" });
+      expect(result.errors[0].message).toContain("target field 'extra' is not an input of 'p'");
+    });
+
+    it("reports a known type mismatch naming the edge", async () => {
+      const project = makeContractProject({ flag: "boolean" });
+      project.prompts.p = makePrompt("p", { label: { type: "string" } });
+      project.edges.feed = edge("feed", "input", "p", { label: "flag" });
+      project.edges.e2 = edge("e2", "p", "output", { text: "text" });
+      const result = await validateProject(project);
+      expect(result.valid).toBe(false);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].edgeId).toBe("feed");
+      expect(result.errors[0].message).toContain("Type mismatch");
+      expect(result.errors[0].message).toContain("'flag' (boolean)");
+      expect(result.errors[0].message).toContain("'label' (string)");
+    });
+
+    const typeCases: [string, string, boolean][] = [
+      ["integer", "number", true],
+      ["number", "integer", false],
+      ["object", "string", true],
+      ["array", "string", true],
+      ["string", "number", false],
+      ["boolean", "string", false],
+    ];
+    for (const [source, target, ok] of typeCases) {
+      it(`${ok ? "accepts" : "rejects"} ${source} -> ${target} end to end`, async () => {
+        const project = makeContractProject({ v: source });
+        project.prompts.p = makePrompt("p", { v: { type: target } });
+        project.edges.e1 = edge("e1", "input", "p", { v: "v" });
+        project.edges.e2 = edge("e2", "p", "output", { text: "text" });
+        const result = await validateProject(project);
+        expect(result.valid).toBe(ok);
+      });
+    }
+
+    it("warns about a declared type it does not check", async () => {
+      const project = makeContractProject({ when: "date" });
+      project.prompts.p = makePrompt("p", { when: { type: "string" } });
+      project.edges.e1 = edge("e1", "input", "p", { when: "when" });
+      project.edges.e2 = edge("e2", "p", "output", { text: "text" });
+      const result = await validateProject(project);
+      expect(result.errors).toEqual([]);
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]).toEqual({
+        message:
+          "Node 'input' (input): type 'date' of output field 'when' is not checked. " +
+          "Known types: string, number, integer, boolean, array, object",
+        nodeId: "input",
+      });
+      expect(result.valid).toBe(true);
+      expect((await validateProject(project, { strict: true })).valid).toBe(false);
+    });
+
+    it("warns about an unchecked type on a field no edge maps", async () => {
+      const project = makeContractProject({ text: "string", token: "uuid" });
+      project.prompts.p = makePrompt("p", { text: { type: "string" } });
+      project.edges.e1 = edge("e1", "input", "p", { text: "text" });
+      project.edges.e2 = edge("e2", "p", "output", { text: "text" });
+      const result = await validateProject(project);
+      expect(result.errors).toEqual([]);
+      expect(result.warnings).toEqual([
+        expect.objectContaining({
+          nodeId: "input",
+          message: expect.stringContaining("type 'uuid' of output field 'token' is not checked"),
+        }),
+      ]);
+      expect(result.valid).toBe(true);
+      const strict = await validateProject(project, { strict: true });
+      expect(strict.valid).toBe(false);
+    });
+
+    it("warns about unchecked prompt input and output types once each, mapped or not", async () => {
+      const project = makeContractProject({ text: "string", when: "date" });
+      project.prompts.p = makePrompt(
+        "p",
+        {
+          text: { type: "string" },
+          when: { type: "date" },
+          spare: { type: "money", required: false },
+        },
+        { id: "uuid" }
+      );
+      // Two edges read and write the same unchecked fields.
+      project.edges.e1 = edge("e1", "input", "p", { text: "text", when: "when" });
+      project.edges.e2 = edge("e2", "p", "output", { id: "id" });
+      project.edges.e3 = edge("e3", "p", "output", { again: "id" });
+      const result = await validateProject(project);
+      expect(result.errors).toEqual([]);
+      expect(result.warnings.map((w) => w.message).sort()).toEqual(
+        [
+          "Node 'input' (input): type 'date' of output field 'when' is not checked.",
+          "Node 'p' (prompt): type 'date' of input field 'when' is not checked.",
+          "Node 'p' (prompt): type 'money' of input field 'spare' is not checked.",
+          "Node 'p' (prompt): type 'uuid' of output field 'id' is not checked.",
+        ]
+          .map((m) => `${m} Known types: string, number, integer, boolean, array, object`)
+          .sort()
+      );
+    });
+
+    it("reports a required input that no edge maps", async () => {
+      const project = makeContractProject({ text: "string" });
+      project.prompts.p = makePrompt("p", {
+        text: { type: "string" },
+        tone: { type: "string" },
+        style: { type: "string", default: "plain" },
+        note: { type: "string", required: false },
+      });
+      project.edges.e1 = edge("e1", "input", "p", { text: "text" });
+      project.edges.e2 = edge("e2", "p", "output", { text: "text" });
+      const result = await validateProject(project);
+      expect(result.valid).toBe(false);
+      expect(result.errors).toEqual([
+        {
+          message: "Node 'p' (prompt): required input 'tone' has no default and no incoming edge maps it",
+          nodeId: "p",
+        },
+      ]);
+    });
+
+    it("counts a mapping on a conditional edge as supplying a required input", async () => {
+      const project = makeContractProject({ text: "string" });
+      project.prompts.classify = makePrompt(
+        "classify",
+        { text: { type: "string" } },
+        { sentiment: "string", text: "string" }
+      );
+      project.prompts.positive = makePrompt("positive", { text: { type: "string" } });
+      project.prompts.negative = makePrompt("negative", { text: { type: "string" } });
+      project.edges.e1 = edge("e1", "input", "classify", { text: "text" });
+      project.edges.pos = edge("pos", "classify", "positive", { text: "text" }, "sentiment == 'positive'");
+      project.edges.neg = edge("neg", "classify", "negative", { text: "text" }, "sentiment == 'negative'");
+      project.edges.pos_out = edge("pos_out", "positive", "output", { reply: "text" });
+      project.edges.neg_out = edge("neg_out", "negative", "output", { reply: "text" });
+      const result = await validateProject(project, { strict: true });
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+  });
+
+  describe("agent and undeclared JSON outputs", () => {
+    function makeAgent(id: string, promptNode: PromptNode): AgentNode {
+      return {
+        id,
+        promptPath: `prompts/${id}.prompt`,
+        model: null,
+        allowedTools: [],
+        mcpServers: {},
+        maxTurns: 1,
+        permissionMode: null,
+        effort: null,
+        cwd: null,
+        executionMode: "cli",
+        timeout: null,
+        promptNode,
+      };
+    }
+
+    /** input -> writer (agent) -> review (prompt needing `draft`) -> output */
+    function makeAgentReviewProject(
+      writerPrompt: PromptNode,
+      draftSource: string
+    ): Project {
+      const project = makeContractProject({ topic: "string" });
+      project.agents.writer = makeAgent("writer", writerPrompt);
+      project.prompts.review = makePrompt("review", { draft: { type: "string" } });
+      project.edges.e1 = edge("e1", "input", "writer", { topic: "topic" });
+      project.edges.e2 = edge("e2", "writer", "review", { draft: draftSource });
+      project.edges.e3 = edge("e3", "review", "output", { text: "text" });
+      return project;
+    }
+
+    it("rejects `text` from a JSON agent, which outputs only its declared fields", async () => {
+      const writer = makePrompt("writer", { topic: { type: "string" } }, { summary: "string" });
+      const project = makeAgentReviewProject(writer, "text");
+      const result = await validateProject(project, { strict: true });
+      expect(result.valid).toBe(false);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toMatchObject({ edgeId: "e2", nodeId: "writer" });
+      expect(result.errors[0].message).toContain(
+        `source field 'text' does not exist in 'writer' (agent) output. Available fields: ["summary"]`
+      );
+    });
+
+    it("warns about an unchecked agent prompt type that no edge maps", async () => {
+      const writer = makePrompt(
+        "writer",
+        { topic: { type: "string" }, budget: { type: "money", default: 5 } },
+        { summary: "string", score: "percent" }
+      );
+      const project = makeAgentReviewProject(writer, "summary");
+      const result = await validateProject(project);
+      expect(result.errors).toEqual([]);
+      expect(result.warnings.map((w) => [w.nodeId, w.message.split(". Known")[0]])).toEqual([
+        ["writer", "Node 'writer' (agent): type 'money' of input field 'budget' is not checked"],
+        ["writer", "Node 'writer' (agent): type 'percent' of output field 'score' is not checked"],
+      ]);
+      expect((await validateProject(project, { strict: true })).valid).toBe(false);
+    });
+
+    it("warns about an unchecked type in a text prompt's output schema", async () => {
+      // The parser keeps output.schema fields whatever the format, so a text
+      // prompt can declare one. Its runtime output is still only `text`.
+      const project = makeContractProject({ text: "string" });
+      project.prompts.p = makePrompt("p", { text: { type: "string" } });
+      project.prompts.p.output = {
+        format: "text",
+        fields: { ignored: ["uuid", ""], text: ["money", ""], plain: ["string", ""] },
+      };
+      project.edges.e1 = edge("e1", "input", "p", { text: "text" });
+      project.edges.e2 = edge("e2", "p", "output", { text: "text" });
+      const result = await validateProject(project);
+      expect(result.errors).toEqual([]);
+      expect(result.warnings.map((w) => [w.nodeId, w.message.split(". Known")[0]])).toEqual([
+        ["p", "Node 'p' (prompt): type 'uuid' of output field 'ignored' is not checked"],
+        ["p", "Node 'p' (prompt): type 'money' of output field 'text' is not checked"],
+      ]);
+      expect(result.valid).toBe(true);
+      expect((await validateProject(project, { strict: true })).valid).toBe(false);
+    });
+
+    it("warns about an unchecked type in a text agent's output schema", async () => {
+      const writer = makePrompt("writer", { topic: { type: "string" } });
+      writer.output = { format: "text", fields: { ignored: ["uuid", ""] } };
+      const project = makeAgentReviewProject(writer, "text");
+      const result = await validateProject(project);
+      expect(result.errors).toEqual([]);
+      expect(result.warnings.map((w) => [w.nodeId, w.message.split(". Known")[0]])).toEqual([
+        ["writer", "Node 'writer' (agent): type 'uuid' of output field 'ignored' is not checked"],
+      ]);
+      expect(result.valid).toBe(true);
+      expect((await validateProject(project, { strict: true })).valid).toBe(false);
+    });
+
+    it("accepts a declared field from a JSON agent", async () => {
+      const writer = makePrompt("writer", { topic: { type: "string" } }, { summary: "string" });
+      const result = await validateProject(makeAgentReviewProject(writer, "summary"), { strict: true });
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+
+    it("accepts `text` from a text agent and rejects any other field", async () => {
+      const writer = makePrompt("writer", { topic: { type: "string" } });
+      expect(writer.output.format).toBe("text");
+      expect((await validateProject(makeAgentReviewProject(writer, "text"), { strict: true })).valid).toBe(true);
+      const bad = await validateProject(makeAgentReviewProject(writer, "summary"));
+      expect(bad.valid).toBe(false);
+      expect(bad.errors[0].message).toContain(`Available fields: ["text"]`);
+    });
+
+    it("still offers `text` from a JSON prompt, which returns the raw response too", async () => {
+      const project = makeContractProject({ topic: "string" });
+      project.prompts.writer = makePrompt("writer", { topic: { type: "string" } }, { summary: "string" });
+      project.prompts.review = makePrompt("review", { draft: { type: "string" } });
+      project.edges.e1 = edge("e1", "input", "writer", { topic: "topic" });
+      project.edges.e2 = edge("e2", "writer", "review", { draft: "text" });
+      project.edges.e3 = edge("e3", "review", "output", { text: "text" });
+      const result = await validateProject(project, { strict: true });
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+    });
+
+    it("does not check fields from a JSON agent or prompt that declares no output fields", async () => {
+      const writer = makePrompt("writer", { topic: { type: "string" } });
+      writer.output.format = "json";
+      const agentResult = await validateProject(makeAgentReviewProject(writer, "anything"), { strict: true });
+      expect(agentResult.errors).toEqual([]);
+      expect(agentResult.valid).toBe(true);
+
+      const project = makeContractProject({ topic: "string" });
+      project.prompts.writer = writer;
+      project.prompts.review = makePrompt("review", { draft: { type: "string" } });
+      project.edges.e1 = edge("e1", "input", "writer", { topic: "topic" });
+      project.edges.e2 = edge("e2", "writer", "review", { draft: "anything" });
+      project.edges.e3 = edge("e3", "review", "output", { text: "text" });
+      const promptResult = await validateProject(project, { strict: true });
+      expect(promptResult.errors).toEqual([]);
+      expect(promptResult.valid).toBe(true);
+    });
+
+    it("reports JSON agent field types without a `text` entry", () => {
+      const project = makeContractProject();
+      project.agents.writer = makeAgent(
+        "writer",
+        makePrompt("writer", {}, { summary: "string", count: "integer" })
+      );
+      expect(getNodeOutputFields(project, "writer", "agent")).toEqual(new Set(["summary", "count"]));
+      expect(getNodeOutputTypes(project, "writer", "agent")).toEqual({
+        summary: "string",
+        count: "integer",
+      });
+    });
+  });
+
+  describe("disconnected components", () => {
+    function makeDisconnectedProject(): Project {
+      const project = makeContractProject({ text: "string" });
+      project.prompts.p = makePrompt("p", { text: { type: "string" } });
+      project.prompts.orphan = makePrompt("orphan");
+      project.outputNodes.orphan_out = { id: "orphan_out", format: "json" };
+      project.edges.e1 = edge("e1", "input", "p", { text: "text" });
+      project.edges.e2 = edge("e2", "p", "output", { text: "text" });
+      project.edges.e3 = edge("e3", "orphan", "orphan_out", { text: "text" });
+      return project;
+    }
+
+    it("warns about a component with no input node or entrypoint, and passes", async () => {
+      const result = await validateProject(makeDisconnectedProject());
+      expect(result.errors).toEqual([]);
+      expect(result.warnings).toEqual([
+        {
+          message:
+            'Nodes ["orphan","orphan_out"] are not connected to any input node ' +
+            "or entrypoint, so no run input reaches them",
+          nodeId: "orphan",
+        },
+      ]);
+      expect(result.valid).toBe(true);
+    });
+
+    it("fails the same project in strict mode", async () => {
+      const result = await validateProject(makeDisconnectedProject(), { strict: true });
+      expect(result.valid).toBe(false);
+      expect(result.errors).toEqual([]);
+      expect(result.warnings).toHaveLength(1);
+    });
+
+    it("accepts the component when it holds a declared entrypoint", async () => {
+      const project = makeDisconnectedProject();
+      project.entrypoints = ["input", "orphan"];
+      const result = await validateProject(project, { strict: true });
+      expect(result.valid).toBe(true);
+    });
   });
 });

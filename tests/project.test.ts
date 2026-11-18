@@ -8,6 +8,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { loadProject, loadDotenv } from "../src/project.js";
 import { ParseError, ValidationError } from "../src/errors.js";
+import { validateProject } from "../src/validate.js";
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "harpoon-test-"));
@@ -507,7 +508,7 @@ tools:
     });
   });
 
-  it("rejects invalid tool output schemas", () => {
+  it("keeps a tool output type outside the known types", () => {
     tmpdir = makeTmpDir();
     fs.writeFileSync(
       path.join(tmpdir, "agent.tml"),
@@ -524,7 +525,331 @@ tools:
 `
     );
 
-    expect(() => loadProject(tmpdir)).toThrow(/invalid type 'mystery'/);
+    const project = loadProject(tmpdir);
+    expect(project.tools.my_tool.outputSchema.result.type).toBe("mystery");
+  });
+
+  it("rejects a tool output type that is not a string", () => {
+    tmpdir = makeTmpDir();
+    fs.writeFileSync(
+      path.join(tmpdir, "agent.tml"),
+      `harpoon: "1.0"
+name: test
+tools:
+  my_tool:
+    type: typescript
+    module: tools
+    output:
+      schema:
+        result:
+          type: 5
+`
+    );
+
+    expect(() => loadProject(tmpdir)).toThrow(
+      /output field 'result' type must be a non-empty string/
+    );
+  });
+
+  describe("problems kept for validateProject()", () => {
+    it("records a node with an unknown type instead of dropping it", async () => {
+      tmpdir = makeTmpDir();
+      fs.writeFileSync(
+        path.join(tmpdir, "agent.tml"),
+        `harpoon: "1.0"
+name: test
+nodes:
+  input:
+    type: input
+  helper:
+    type: promt
+  output:
+    type: output
+edges:
+  e1: { from: input, to: output }
+`
+      );
+
+      const project = loadProject(tmpdir);
+      expect(project.unknownTypeNodes).toEqual({ helper: "promt" });
+
+      const result = await validateProject(project);
+      expect(result.valid).toBe(false);
+      expect(result.errors.map((e) => e.message)).toEqual([
+        "Node 'helper' has unknown type 'promt'. " +
+          "Valid types: input, output, prompt, tool, agent, branch, map, trigger",
+      ]);
+    });
+
+    it("does not turn an unknown-type node on an edge into an implicit output", async () => {
+      tmpdir = makeTmpDir();
+      fs.writeFileSync(
+        path.join(tmpdir, "agent.tml"),
+        `harpoon: "1.0"
+name: test
+nodes:
+  input:
+    type: input
+  helper:
+    type: promt
+edges:
+  e1: { from: input, to: helper }
+`
+      );
+
+      const project = loadProject(tmpdir);
+      expect(project.outputNodes).not.toHaveProperty("helper");
+
+      const result = await validateProject(project);
+      expect(result.valid).toBe(false);
+      expect(result.errors.map((e) => e.message)).toContain(
+        "Edge 'e1' references unknown target node 'helper' " +
+          "(its type 'promt' is not a known node type)"
+      );
+    });
+
+    it("keeps a misspelled manifest edge endpoint so validation reports it", async () => {
+      tmpdir = makeTmpDir();
+      fs.writeFileSync(
+        path.join(tmpdir, "agent.tml"),
+        `harpoon: "1.0"
+name: test
+nodes:
+  input:
+    type: input
+  output:
+    type: output
+edges:
+  e1: { from: input, to: outptu }
+  e2: { from: inptu, to: output }
+`
+      );
+
+      const project = loadProject(tmpdir);
+      expect(Object.keys(project.inputNodes)).toEqual(["input"]);
+      expect(Object.keys(project.outputNodes)).toEqual(["output"]);
+
+      const result = await validateProject(project);
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContainEqual({
+        message: "Edge 'e1' references unknown target node 'outptu'",
+        edgeId: "e1",
+        nodeId: "outptu",
+      });
+      expect(result.errors).toContainEqual({
+        message: "Edge 'e2' references unknown source node 'inptu'",
+        edgeId: "e2",
+        nodeId: "inptu",
+      });
+    });
+
+    it("accepts an explicit 'prompt' type in the manifest", async () => {
+      tmpdir = makeTmpDir();
+      fs.writeFileSync(
+        path.join(tmpdir, "agent.tml"),
+        `harpoon: "1.0"
+name: test
+nodes:
+  input:
+    type: input
+    schema:
+      name: { type: string, description: Name }
+  greet:
+    type: prompt
+  output:
+    type: output
+edges:
+  e1: { from: input, to: greet, mapping: { name: name } }
+  e2: { from: greet, to: output, mapping: { greeting: text } }
+`
+      );
+      fs.mkdirSync(path.join(tmpdir, "prompts"));
+      fs.writeFileSync(
+        path.join(tmpdir, "prompts", "greet.prompt"),
+        `---
+id: greet
+harpoon: "1.0"
+input:
+  name: { type: string }
+---
+Hello {{name}}
+`
+      );
+
+      const project = loadProject(tmpdir);
+      expect(project.unknownTypeNodes).toBeUndefined();
+      expect((await validateProject(project, { strict: true })).valid).toBe(true);
+    });
+
+    it("reports an agent whose prompt file does not exist", async () => {
+      tmpdir = makeTmpDir();
+      fs.writeFileSync(
+        path.join(tmpdir, "agent.tml"),
+        `harpoon: "1.0"
+name: test
+nodes:
+  input:
+    type: input
+  writer:
+    type: agent
+    prompt: prompts/missing.prompt
+edges:
+  e1: { from: input, to: writer }
+`
+      );
+
+      const project = loadProject(tmpdir);
+      expect(project.agents.writer.promptNode).toBeNull();
+
+      const result = await validateProject(project);
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContainEqual({
+        message: "Agent 'writer': prompt file not found: prompts/missing.prompt",
+        nodeId: "writer",
+      });
+    });
+
+    it("reports an agent whose prompt file does not parse", async () => {
+      tmpdir = makeTmpDir();
+      fs.writeFileSync(
+        path.join(tmpdir, "agent.tml"),
+        `harpoon: "1.0"
+name: test
+nodes:
+  input:
+    type: input
+  writer:
+    type: agent
+    prompt: agents/writer.prompt
+edges:
+  e1: { from: input, to: writer }
+`
+      );
+      // Outside prompts/, so prompt discovery does not parse (and throw on) it.
+      fs.mkdirSync(path.join(tmpdir, "agents"));
+      fs.writeFileSync(
+        path.join(tmpdir, "agents", "writer.prompt"),
+        "no frontmatter here\n"
+      );
+
+      const project = loadProject(tmpdir);
+      const result = await validateProject(project);
+      expect(result.valid).toBe(false);
+      const error = result.errors.find((e) => e.nodeId === "writer");
+      expect(error?.message).toContain(
+        "Agent 'writer': cannot parse prompt file agents/writer.prompt"
+      );
+      expect(error?.message).toContain("missing frontmatter delimiters");
+    });
+
+    it("reports a malformed agent prompt under prompts/ instead of throwing", async () => {
+      tmpdir = makeTmpDir();
+      fs.writeFileSync(
+        path.join(tmpdir, "agent.tml"),
+        `harpoon: "1.0"
+name: test
+nodes:
+  input:
+    type: input
+  writer:
+    type: agent
+    prompt: prompts/writer.prompt
+edges:
+  e1: { from: input, to: writer }
+`
+      );
+      // prompt discovery also parses every file in prompts/.
+      fs.mkdirSync(path.join(tmpdir, "prompts"));
+      fs.writeFileSync(
+        path.join(tmpdir, "prompts", "writer.prompt"),
+        "no frontmatter here\n"
+      );
+
+      const project = loadProject(tmpdir);
+      expect(project.agents.writer.promptNode).toBeNull();
+      expect(project.prompts).not.toHaveProperty("writer");
+
+      const result = await validateProject(project);
+      expect(result.valid).toBe(false);
+      const error = result.errors.find((e) => e.nodeId === "writer");
+      expect(error?.message).toContain(
+        "Agent 'writer': cannot parse prompt file prompts/writer.prompt"
+      );
+      expect(error?.message).toContain("missing frontmatter delimiters");
+    });
+
+    it("still throws for a malformed prompt under prompts/ that no agent uses", () => {
+      tmpdir = makeTmpDir();
+      fs.writeFileSync(
+        path.join(tmpdir, "agent.tml"),
+        `harpoon: "1.0"
+name: test
+nodes:
+  input:
+    type: input
+`
+      );
+      fs.mkdirSync(path.join(tmpdir, "prompts"));
+      fs.writeFileSync(
+        path.join(tmpdir, "prompts", "broken.prompt"),
+        "no frontmatter here\n"
+      );
+
+      expect(() => loadProject(tmpdir)).toThrow(ParseError);
+    });
+
+    it("warns about a loaded tool output type outside the known types", async () => {
+      tmpdir = makeTmpDir();
+      fs.writeFileSync(
+        path.join(tmpdir, "agent.tml"),
+        `harpoon: "1.0"
+name: test
+nodes:
+  input:
+    type: input
+    schema:
+      query: { type: string, description: Search text }
+  done:
+    type: output
+tools:
+  lookup:
+    type: typescript
+    module: tools
+    function: lookup
+    output:
+      schema:
+        id:
+          type: uuid
+edges:
+  e1:
+    from: input
+    to: lookup
+    mapping: { query: query }
+  e2:
+    from: lookup
+    to: done
+    mapping: { id: id }
+`
+      );
+
+      const project = loadProject(tmpdir);
+      expect(project.tools.lookup.outputSchema.id.type).toBe("uuid");
+
+      const lenient = await validateProject(project);
+      expect(lenient.errors).toEqual([]);
+      expect(lenient.valid).toBe(true);
+      expect(lenient.warnings).toEqual([
+        expect.objectContaining({
+          nodeId: "lookup",
+          message: expect.stringContaining(
+            "Node 'lookup' (tool): type 'uuid' of output field 'id' is not checked"
+          ),
+        }),
+      ]);
+
+      const strict = await validateProject(project, { strict: true });
+      expect(strict.valid).toBe(false);
+    });
   });
 });
 

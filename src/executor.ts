@@ -10,19 +10,17 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
 import { evaluate } from "./conditions.js";
-import {
-  buildDag,
-  getAncestors,
-  validateEdgeMappings,
-} from "./dag.js";
+import { getAncestors } from "./dag.js";
 import type { DAG } from "./dag.js";
 import {
   HarpoonError,
   NodeExecutionError,
   SchemaValidationError,
+  ValidationError,
   BranchError,
   MapError,
 } from "./errors.js";
+import { formatDiagnostics, validateProject } from "./validate.js";
 import { parsePromptFile } from "./parser.js";
 import type { PromptNode } from "./parser.js";
 import type { Edge, Project, ToolOutputField } from "./project.js";
@@ -162,6 +160,13 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+/** The JSON type of a value, for schema error messages. */
+function jsonTypeOf(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
 function validateSchema(
   data: Record<string, unknown>,
   schema: Record<string, [string, string]>
@@ -183,7 +188,7 @@ function validateSchema(
     const expected = expectedTypes[fieldType];
     if (expected && typeof value !== expected) {
       throw new SchemaValidationError(
-        `Field '${fieldName}' expected ${fieldType}, got ${typeof value}`
+        `Field '${fieldName}' expected ${fieldType}, got ${jsonTypeOf(value)}`
       );
     }
     if (fieldType === "integer" && !Number.isInteger(value)) {
@@ -193,7 +198,7 @@ function validateSchema(
     }
     if (fieldType === "array" && !Array.isArray(value)) {
       throw new SchemaValidationError(
-        `Field '${fieldName}' expected array, got ${typeof value}`
+        `Field '${fieldName}' expected array, got ${jsonTypeOf(value)}`
       );
     }
     if (
@@ -201,7 +206,7 @@ function validateSchema(
       (typeof value !== "object" || value === null || Array.isArray(value))
     ) {
       throw new SchemaValidationError(
-        `Field '${fieldName}' expected object, got ${typeof value}`
+        `Field '${fieldName}' expected object, got ${jsonTypeOf(value)}`
       );
     }
   }
@@ -242,6 +247,28 @@ function validateRequiredInputs(
       `Missing required input(s) for '${promptNode.id}': ${missing.join(", ")}. ` +
         `Check edge mappings to ensure these fields are provided.`
     );
+  }
+}
+
+function validateRunInputs(
+  project: Project,
+  inputs: Record<string, unknown>
+): void {
+  for (const [nodeId, inputNode] of Object.entries(project.inputNodes)) {
+    const provided = Object.fromEntries(
+      Object.entries(inputNode.schema).filter(
+        // A supplied null is a value, so it must match the declared type.
+        ([name]) => inputs[name] !== undefined
+      )
+    );
+    try {
+      validateSchema(inputs, provided);
+    } catch (e) {
+      if (!(e instanceof SchemaValidationError)) throw e;
+      throw new ValidationError(
+        `Run input rejected by input node '${nodeId}': ${e.message}`
+      );
+    }
   }
 }
 
@@ -674,13 +701,24 @@ async function executeAgentNodeAsync(
     );
   }
 
-  nodeTrace.output = result.output;
   nodeTrace.tokens = result.tokens;
   nodeTrace.costUsd = result.costUsd;
   nodeTrace.sessionId = result.sessionId;
   nodeTrace.model = result.requestedModel ?? nodeTrace.model;
   nodeTrace.resolvedModel = result.resolvedModel;
   nodeTrace.numTurns = result.numTurns;
+
+  // Check JSON output against the prompt's declared fields, as the prompt
+  // node path does, so a bad result fails here and never reaches downstream.
+  const outputSchema = agentNode.promptNode.output;
+  if (
+    outputSchema.format === "json" &&
+    Object.keys(outputSchema.fields).length > 0
+  ) {
+    validateSchema(result.output, outputSchema.fields);
+  }
+
+  nodeTrace.output = result.output;
 }
 
 async function executeBranchNodeAsync(
@@ -1427,20 +1465,20 @@ export async function run(
 
   const registry = getRegistry();
 
-  // Build DAG
-  const dag = buildDag(project);
-
-  // Validate edge mappings in dry-run or verbose mode
-  if (dryRun || verbose) {
-    const validation = validateEdgeMappings(project, dag);
-    if (validation.warnings.length > 0) {
-      process.stderr.write("Warning: Edge mapping warnings:\n");
-      for (const warning of validation.warnings) {
-        process.stderr.write(`  - ${warning.message}\n`);
-      }
-      process.stderr.write("\n");
-    }
+  // Validate structure and contracts before any node runs, in every mode.
+  const validation = await validateProject(project, { entrypoint });
+  if ((dryRun || verbose) && validation.warnings.length > 0) {
+    process.stderr.write("Warning: Validation warnings:\n");
+    process.stderr.write(`${formatDiagnostics(validation.warnings)}\n\n`);
   }
+  if (!validation.valid || !validation.dag) {
+    throw new ValidationError(
+      `Project '${project.name}' failed validation with ` +
+        `${validation.errors.length} error(s):\n` +
+        formatDiagnostics(validation.errors)
+    );
+  }
+  const dag = validation.dag;
 
   // Validate start_from requires resume_from
   if (startFrom && !resumeFrom) {
@@ -1504,6 +1542,15 @@ export async function run(
         }
       }
     }
+  }
+
+  // Type-check run inputs against each input node's schema before any node
+  // runs. Every field present in `inputs` is checked, including a `null`
+  // value. A missing field is not rejected here: input schemas have no
+  // `required` flag, and a missing required field is caught by
+  // validateRequiredInputs() at the node that consumes it.
+  if (inputs) {
+    validateRunInputs(project, inputs);
   }
 
   // Initialize execution state

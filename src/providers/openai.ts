@@ -31,6 +31,7 @@ export class OpenAIProvider implements Provider {
       const typeMap: Record<string, string> = {
         string: 'string',
         number: 'number',
+        integer: 'integer',
         boolean: 'boolean',
         array: 'array',
         object: 'object',

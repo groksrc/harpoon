@@ -290,3 +290,27 @@ If uncertain about documentation:
 ## Summary
 
 **The Golden Rule:** Code without documentation is incomplete. Documentation without tested examples is untrustworthy. Always update both together.
+
+## Releasing
+
+harpoon is not published to npm. Each Mac runs it from its own checkout: the `harpoon`
+command links to `~/code/harpoon/dist/cli.js` (through `npm link`, and on jodys-imac also
+`/usr/local/bin/harpoon`). A merge to `main` changes nothing until that checkout is
+rebuilt, so shipping is three steps.
+
+1. **Version (in the PR).** Bump `version` in `package.json` and `package-lock.json`
+   following semver: a change that can make an existing workflow fail validation or run
+   differently is a minor bump while harpoon is 1.x and says so in the PR; fixes are a
+   patch.
+2. **Tag (after the merge).** Tag the merge commit and push the tag:
+   `git tag -a vX.Y.Z <merge commit> -m "harpoon vX.Y.Z" && git push origin vX.Y.Z`.
+   Only the version in `package.json` on that commit may be tagged.
+3. **Rebuild on each Mac that links harpoon** (jodys-imac and drews-m5):
+   `cd ~/code/harpoon && git checkout main && git pull --ff-only && npm ci && npm run build`,
+   then check `harpoon --version` prints the new version.
+
+Before step 3 for a change to validation, run `harpoon project validate` from a scratch
+build against every project in `~/code/harpoon-skills` (each folder with an `agent.tml`)
+and fix any project that fails first. Scheduled workflows run from that checkout, so a
+rebuild that rejects one of them breaks its next run.
+
